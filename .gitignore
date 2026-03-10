@@ -1,0 +1,16 @@
+# Binaries
+custom-agent
+*.exe
+
+# Environment
+.env
+exec-approvals.json
+
+# Sessions (user conversation data)
+sessions/*.jsonl
+
+# Go
+/vendor/
+*.test
+coverage.out
+divine.txt
