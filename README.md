@@ -1,47 +1,80 @@
 # Custom Agent
 
-A basic Go Telegram bot that responds to messages. Step one of building an OpenClaw-like agent.
+A Go-based AI agent that responds to messages via multiple gateways (Telegram, Discord, HTTP, Signal). Uses Groq's Llama model with tools for file access, web search, memory, reminders, sub-agents, and optional EVM wallet operations. Step one of building an OpenClaw-like agent.
+
+---
+
+## Index
+
+- [Run locally](#run-locally)
+- [Setup](#setup)
+- [Tools](#tools)
+- [Personality](#personality)
+- [Gateways](#gateways)
+- [Context compaction](#context-compaction)
+- [Long-term memory & embeddings](#long-term-memory--embeddings)
+- [Wallet](#wallet)
+- [Contributing](#contributing)
+- [Project structure](#project-structure)
+
+---
+
+## Run locally
+
+### Prerequisites
+
+- Go 1.21+
+- API keys: Groq, Brave Search, and at least one gateway (e.g. Telegram)
+
+### Quick start
+
+```bash
+# 1. Clone and enter the project
+cd custom-agent
+
+# 2. Install dependencies
+go mod tidy
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your TELEGRAM_BOT_TOKEN, GROQ_API_KEY, BRAVE_SEARCH_API_KEY
+
+# 4. Run
+go run .
+```
+
+Config is loaded from `.env` (if present) and validated at startup. At least one gateway must be configured.
+
+### Test
+
+Message your bot on Telegram (or your configured gateway). It will respond using Groq's Llama 3.1 8B model. Conversation history is stored per user in `sessions/` (JSONL files), so the bot remembers context—e.g. "what did I say earlier?" works.
+
+**Commands:** Send `/new` to clear your session and start a fresh conversation.
+
+---
 
 ## Setup
 
-### 1. Create a Telegram Bot
+### API keys
 
-1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts
-3. Copy the token you receive
+1. **Telegram**: Message [@BotFather](https://t.me/BotFather), send `/newbot`, copy the token
+2. **Groq**: Sign up at [console.groq.com](https://console.groq.com), create an API key
+3. **Brave Search**: Get a key at [brave.com/search/api](https://brave.com/search/api) (free tier available)
 
-### 2. Get a Groq API Key
-
-1. Sign up at [console.groq.com](https://console.groq.com)
-2. Create an API key
-
-### 3. Configure
+### Configure
 
 Copy the example env file and fill in your tokens:
 
 ```bash
 cp .env.example .env
-# Edit .env with your TELEGRAM_BOT_TOKEN, GROQ_API_KEY, and BRAVE_SEARCH_API_KEY
+# Edit .env with TELEGRAM_BOT_TOKEN, GROQ_API_KEY, BRAVE_SEARCH_API_KEY
 ```
 
-Get a Brave Search API key at [brave.com/search/api](https://brave.com/search/api) (free tier available).
+Or export: `export TELEGRAM_BOT_TOKEN=...`, `export GROQ_API_KEY=...`, `export BRAVE_SEARCH_API_KEY=...`
 
-Or export them: `export TELEGRAM_BOT_TOKEN=...`, `export GROQ_API_KEY=...`, `export BRAVE_SEARCH_API_KEY=...`
+Then follow [Run locally](#run-locally) to start the bot.
 
-### 4. Run the Bot
-
-```bash
-go mod tidy
-go run .
-```
-
-Config is loaded from `.env` (if present) and validated at startup.
-
-### 5. Test
-
-Message your bot on Telegram. It will respond using Groq's Llama 3.1 8B model. Conversation history is stored per user in `sessions/` (JSONL files), so the bot remembers context—e.g. "what did I say earlier?" works.
-
-**Commands:** Send `/new` to clear your session and start a fresh conversation.
+---
 
 ## Tools
 
@@ -55,12 +88,24 @@ The bot can use tools when the LLM decides they're helpful:
 | `web_search` | Search the web (Brave Search API) |
 | `save_memory` | Save a fact or preference to long-term memory (survives `/new`) |
 | `read_memory` | Search long-term memory (semantic search when Ollama is available) |
+| `create_scheduled_reminder` | Schedule a reminder (cron expression). Messages are sent via the configured gateway. |
+| `list_reminders` | List scheduled reminders |
+| `delete_reminder` | Delete a reminder by ID |
+| `spawn_subagents` | Run parallel stateless sub-agents for research or multi-step tasks (read-only tools) |
+| `wallet_get_balance` | Get native token balance (when wallet enabled) |
+| `wallet_execute_transfer` | Send native token (when wallet enabled) |
+| `wallet_execute_contract_call` | Call a smart contract (when wallet enabled) |
+| `wallet_list_transactions` | List recent agent-initiated transactions (when wallet enabled) |
 
 The agent loop runs until the LLM returns a final text response or hits the tool limit (10 rounds). Add or modify tools in `tools/tools.go`.
+
+---
 
 ## Personality
 
 Edit `PERSONALITY.md` to define the bot's persona. Its contents are injected as the system prompt at startup. Change the tone, style, or add rules—the bot will adopt whatever you write.
+
+---
 
 ## Gateways
 
@@ -92,11 +137,15 @@ curl -X POST "http://localhost:8080/v2/register/+1234567890/verify/CODE"
 
 Then set `SIGNAL_CLI_URL=http://localhost:8080` and `SIGNAL_NUMBER=+1234567890` in `.env`.
 
+---
+
 ## Context Compaction
 
 When conversation history exceeds ~4000 tokens, the agent uses **structured summarization** to compact old context. A JSON summary is produced with sections: `session_intent`, `key_decisions`, `key_facts`, `file_modifications`, `pending_actions`, `artifacts`, `momentum`, `tool_results_summary`. Only recent messages stay in full; older context is replaced by this structured block.
 
 Set `CONTEXT_COMPACTION_THRESHOLD` (default 4000) to tune when compaction triggers.
+
+---
 
 ## Long-term Memory & Embeddings
 
@@ -111,39 +160,93 @@ The bot has **persistent memory** that survives session resets. Use `save_memory
 
 Embeddings are **lazy** (only used when needed) and **cached** (stored with memories). If Ollama is unavailable, the bot falls back to keyword search.
 
+---
+
+## Wallet
+
+Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or signer backend) are set, wallet tools are enabled.
+
+| Env var | Description |
+|---------|-------------|
+| `EVM_RPC_URL` | RPC endpoint (e.g. Alchemy, Infura) |
+| `WALLET_PRIVATE_KEY` | 0x-prefixed private key (or use `WALLET_SIGNER_BACKEND` for KMS/HSM) |
+| `CHAIN_ID` | Default chain (e.g. 1 for Ethereum) |
+| `WALLET_NATIVE_SPEND_LIMIT` | Wei string; transactions above this require user approval |
+| `WALLET_CHAINS` | JSON array for multichain: `[{"chain_id":1,"rpc_url":"...","explorer":"...","name":"Ethereum"}]` |
+
+See `WALLET.md` for tool usage. Transactions above the spend limit trigger a notification; the user must reply `approve: tx_<id>` to execute.
+
+---
+
+## Contributing
+
+- **Run tests**: `go test ./...`
+- **Add tools**: Define and implement in `tools/tools.go`; register in the tool set passed to the agent
+- **Add gateways**: Implement the `gateway.Gateway` interface in `gateway/` and wire it in `main.go`
+- **Code style**: Standard Go formatting (`gofmt`). Keep packages focused; wallet, reminders, and compaction are modular
+
+---
+
 ## Project Structure
 
 ```
 custom-agent/
 ├── agent/
-│   └── agent.go       # core LLM + tools logic
+│   ├── agent.go           # core LLM + tools logic
+│   ├── subagents.go       # parallel sub-agent spawning
+│   └── wallet_guard_test.go
 ├── compaction/
-│   ├── summary.go     # CompactedContext struct, structured JSON format
-│   └── compaction.go  # threshold-based compaction, summarization
+│   ├── summary.go         # CompactedContext struct, structured JSON format
+│   └── compaction.go      # threshold-based compaction, summarization
 ├── config/
 │   └── config.go
 ├── gateway/
-│   ├── types.go       # IncomingMessage, Gateway interface
+│   ├── types.go           # IncomingMessage, Gateway interface
+│   ├── sender.go          # SenderRegistry for reminders/wallet notifications
 │   ├── telegram.go
 │   ├── discord.go
 │   ├── http.go
 │   └── signal.go
 ├── tools/
-│   └── tools.go       # tool definitions + executeTool
+│   ├── tools.go           # tool definitions + executeTool
+│   └── approvals.go       # exec approval persistence
 ├── memory/
-│   └── memory.go     # long-term memory (save/read with embeddings)
+│   └── memory.go          # long-term memory (save/read with embeddings)
 ├── embedding/
-│   └── embedding.go  # Ollama embedding client
+│   └── embedding.go       # Ollama embedding client
 ├── conversation/
-│   └── store.go      # conversation embeddings for retrieval
-├── sessions/
-│   └── *.jsonl       # per-user conversation history
-├── memories/
-│   └── *.jsonl       # per-user long-term memories
+│   └── store.go           # conversation embeddings for retrieval
+├── reminders/
+│   ├── store.go           # reminder persistence
+│   └── cron.go            # scheduled reminder runner
+├── session/
+│   └── session.go         # session management
+├── sessionqueue/
+│   └── queue.go           # per-session request queue
+├── sessionlock/
+│   └── sessionlock.go     # session locking
+├── wallet/
+│   ├── service.go         # wallet service (balance, transfer, contract call)
+│   ├── notifier.go        # approval notifications via SenderRegistry
+│   ├── account/           # EOA and smart account types
+│   ├── chains/            # chain registry (multichain)
+│   ├── signer/            # env/KMS/HSM signer backends
+│   ├── policy/            # spend limit policy
+│   ├── approval/          # approval store
+│   ├── history/           # transaction history
+│   ├── abi/               # ABI parsing
+│   ├── provider/          # RPC provider
+│   └── redact/            # sensitive data redaction
+├── sessions/              # per-user conversation history (*.jsonl)
+├── memories/              # per-user long-term memories (*.jsonl)
+├── reminders/             # package + reminders.jsonl
+├── wallet-approvals/      # pending wallet approvals
+├── wallet-history/        # transaction history
 ├── .env
 ├── .env.example
 ├── go.mod
 ├── main.go
-├── PERSONALITY.md      # bot persona (system prompt)
+├── PERSONALITY.md         # bot persona (system prompt)
+├── WALLET.md              # wallet tool instructions (injected when wallet enabled)
 └── README.md
 ```
