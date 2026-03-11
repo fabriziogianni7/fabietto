@@ -8,6 +8,8 @@ exec-approvals.json
 
 # Sessions (user conversation data)
 sessions/*.jsonl
+memories/*.jsonl
+conversation_embeddings/*.jsonl
 
 # Go
 /vendor/

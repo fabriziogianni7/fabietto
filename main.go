@@ -10,7 +10,10 @@ import (
 
 	"custom-agent/agent"
 	"custom-agent/config"
+	"custom-agent/conversation"
+	"custom-agent/embedding"
 	"custom-agent/gateway"
+	"custom-agent/memory"
 	"custom-agent/tools"
 
 	"github.com/sashabaranov/go-openai"
@@ -26,15 +29,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
-	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, or search the web when needed."
+	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, or use memory (save_memory, read_memory) when relevant."
 	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
 	llmConfig.BaseURL = "https://api.groq.com/openai/v1"
 	llm := openai.NewClientWithConfig(llmConfig)
 
-	toolSet := tools.NewTools(cfg.BraveSearchAPIKey)
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet)
+	// Optional: embedding client for memory and compaction (lazy - only used when needed)
+	var memoryStore *memory.Store
+	var convStore *conversation.Store
+	ollamaURL := strings.TrimSpace(cfg.OllamaURL)
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434" // default; set OLLAMA_URL= to disable
+	}
+	var embedder embedding.Embedder
+	if ollamaURL != "disabled" && ollamaURL != "false" {
+		client := embedding.NewClient(ollamaURL)
+		if cfg.OllamaEmbedModel != "" {
+			client.SetModel(cfg.OllamaEmbedModel)
+		}
+		embedder = client
+		log.Printf("[embedding] Ollama at %s (model: %s) - semantic memory enabled", ollamaURL, client.Model)
+	} else {
+		log.Printf("[embedding] Ollama disabled - using keyword search for memory")
+	}
+	memoryStore = memory.NewStore(embedder)
+	convStore = conversation.NewStore(embedder)
+
+	toolSet := tools.NewTools(cfg.BraveSearchAPIKey, memoryStore)
+	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
 
 	handler := func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

@@ -53,6 +53,8 @@ The bot can use tools when the LLM decides they're helpful:
 | `read_file` | Read a file from the filesystem |
 | `write_file` | Write content to a file |
 | `web_search` | Search the web (Brave Search API) |
+| `save_memory` | Save a fact or preference to long-term memory (survives `/new`) |
+| `read_memory` | Search long-term memory (semantic search when Ollama is available) |
 
 The agent loop runs until the LLM returns a final text response or hits the tool limit (10 rounds). Add or modify tools in `tools/tools.go`.
 
@@ -96,6 +98,19 @@ When conversation history exceeds ~4000 tokens, the agent uses **structured summ
 
 Set `CONTEXT_COMPACTION_THRESHOLD` (default 4000) to tune when compaction triggers.
 
+## Long-term Memory & Embeddings
+
+The bot has **persistent memory** that survives session resets. Use `save_memory` and `read_memory` tools.
+
+**Semantic search** (optional): With [Ollama](https://ollama.ai) running, embeddings enable semantic search—e.g. "favorite pasta" matches "User loves carbonara". Without Ollama, keyword search is used.
+
+```bash
+# Install Ollama, then: ollama pull nomic-embed-text
+# Add to .env: OLLAMA_URL=http://localhost:11434
+```
+
+Embeddings are **lazy** (only used when needed) and **cached** (stored with memories). If Ollama is unavailable, the bot falls back to keyword search.
+
 ## Project Structure
 
 ```
@@ -115,8 +130,16 @@ custom-agent/
 │   └── signal.go
 ├── tools/
 │   └── tools.go       # tool definitions + executeTool
+├── memory/
+│   └── memory.go     # long-term memory (save/read with embeddings)
+├── embedding/
+│   └── embedding.go  # Ollama embedding client
+├── conversation/
+│   └── store.go      # conversation embeddings for retrieval
 ├── sessions/
-│   └── {userID}.jsonl   # per-user conversation history
+│   └── *.jsonl       # per-user conversation history
+├── memories/
+│   └── *.jsonl       # per-user long-term memories
 ├── .env
 ├── .env.example
 ├── go.mod

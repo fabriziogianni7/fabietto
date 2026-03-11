@@ -10,23 +10,30 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"custom-agent/memory"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory"}
 
 // Tools holds tool execution state (e.g. API keys). Create with NewTools.
 type Tools struct {
 	BraveSearchAPIKey string
+	MemoryStore       *memory.Store
 }
 
-// NewTools creates a Tools instance with the given Brave Search API key.
-func NewTools(braveSearchAPIKey string) *Tools {
-	return &Tools{BraveSearchAPIKey: braveSearchAPIKey}
+// NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
+func NewTools(braveSearchAPIKey string, memoryStore *memory.Store) *Tools {
+	return &Tools{
+		BraveSearchAPIKey: braveSearchAPIKey,
+		MemoryStore:       memoryStore,
+	}
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -161,28 +168,163 @@ func Definitions() []openai.Tool {
 				},
 			},
 		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "save_memory",
+				Description: "Save a fact, preference, or important information to long-term memory. Use when the user shares something worth remembering (name, preferences, decisions). Survives session resets.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"content": {Type: jsonschema.String, Description: "The memory to store (concise, factual)"},
+						"tags":    {Type: jsonschema.String, Description: "Optional comma-separated tags for organization"},
+					},
+					Required: []string{"content"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "read_memory",
+				Description: "Search long-term memory for relevant facts. Use before answering when the question might relate to past context (preferences, prior conversations, facts the user shared).",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"query": {Type: jsonschema.String, Description: "What to search for (semantic search supported)"},
+						"limit": {Type: jsonschema.Integer, Description: "Max memories to return (default 5)"},
+					},
+					Required: []string{"query"},
+				},
+			},
+		},
 	}
 }
 
 // ExecuteTool runs the named tool with the given JSON arguments and returns the result.
+// For save_memory and read_memory, platform and userID must be injected by the caller via InjectMemoryArgs.
 func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
-	var args map[string]string
+	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
+	strArgs := toStringMap(args)
 
 	switch name {
 	case "run_command":
-		return runCommand(args["command"])
+		return runCommand(strArgs["command"])
 	case "read_file":
-		return readFile(args["path"])
+		return readFile(strArgs["path"])
 	case "write_file":
-		return writeFile(args["path"], args["content"])
+		return writeFile(strArgs["path"], strArgs["content"])
 	case "web_search":
-		return t.webSearch(args["query"])
+		return t.webSearch(strArgs["query"])
+	case "save_memory":
+		return t.saveMemory(strArgs)
+	case "read_memory":
+		return t.readMemory(strArgs, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func toStringMap(m map[string]interface{}) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if v == nil {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			out[k] = val
+		case float64:
+			out[k] = strconv.FormatFloat(val, 'f', -1, 64)
+		case int:
+			out[k] = strconv.Itoa(val)
+		}
+	}
+	return out
+}
+
+// InjectMemoryArgs adds platform and user_id to args for memory tools. Call before ExecuteTool.
+func InjectMemoryArgs(argsJSON, platform, userID string) (string, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", err
+	}
+	args["platform"] = platform
+	args["user_id"] = userID
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func (t *Tools) saveMemory(args map[string]string) (string, error) {
+	if t.MemoryStore == nil {
+		return "Memory not configured.", nil
+	}
+	content := args["content"]
+	platform := args["platform"]
+	userID := args["user_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context.", nil
+	}
+	if strings.TrimSpace(content) == "" {
+		return "Error: content cannot be empty.", nil
+	}
+	if err := t.MemoryStore.Save(platform, userID, content, args["tags"]); err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return "Memory saved.", nil
+}
+
+func (t *Tools) readMemory(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.MemoryStore == nil {
+		return "Memory not configured.", nil
+	}
+	query := args["query"]
+	platform := args["platform"]
+	userID := args["user_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context.", nil
+	}
+	limit := 5
+	if v := rawArgs["limit"]; v != nil {
+		switch n := v.(type) {
+		case float64:
+			if n > 0 && n <= 20 {
+				limit = int(n)
+			}
+		case string:
+			if k, err := strconv.Atoi(n); err == nil && k > 0 && k <= 20 {
+				limit = k
+			}
+		}
+	} else if s := args["limit"]; s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 20 {
+			limit = n
+		}
+	}
+	memories, err := t.MemoryStore.Search(platform, userID, query, limit)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if len(memories) == 0 {
+		return "No relevant memories found.", nil
+	}
+	var b strings.Builder
+	for i, m := range memories {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(fmt.Sprintf("- %s", m.Content))
+		if m.Tags != "" {
+			b.WriteString(fmt.Sprintf(" [%s]", m.Tags))
+		}
+	}
+	return b.String(), nil
 }
 
 func runCommand(command string) (string, error) {
