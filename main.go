@@ -14,6 +14,7 @@ import (
 	"custom-agent/embedding"
 	"custom-agent/gateway"
 	"custom-agent/memory"
+	"custom-agent/sessionqueue"
 	"custom-agent/tools"
 
 	"github.com/sashabaranov/go-openai"
@@ -60,8 +61,11 @@ func main() {
 	toolSet := tools.NewTools(cfg.BraveSearchAPIKey, memoryStore)
 	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
 
-	handler := func(msg gateway.IncomingMessage) string {
+	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)
+	})
+	handler := func(msg gateway.IncomingMessage) string {
+		return queue.Process(msg)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
