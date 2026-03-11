@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"regexp"
 	"strings"
@@ -17,9 +18,23 @@ import (
 )
 
 const (
-	groqModel     = "moonshotai/kimi-k2-instruct-0905"
+	parentModel   = "moonshotai/kimi-k2-instruct-0905"
 	maxToolRounds = 10
 )
+
+// subagentModels are rotated per sub-agent index to spread load across Groq's per-model TPM quotas.
+var subagentModels = []string{
+	"llama-3.1-8b-instant",
+	"meta-llama/llama-prompt-guard-2-86m",
+	"meta-llama/llama-prompt-guard-2-86m",
+}
+
+func subagentModelForIndex(idx int) string {
+	if len(subagentModels) == 0 {
+		return "llama-3.1-8b-instant"
+	}
+	return subagentModels[idx%len(subagentModels)]
+}
 
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
@@ -37,7 +52,7 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 	return &Agent{
 		client:       client,
 		systemPrompt: systemPrompt,
-		compactor:    compaction.NewCompactor(client, groqModel, tokenThreshold),
+		compactor:    compaction.NewCompactor(client, parentModel, tokenThreshold),
 		tools:        toolSet,
 		memoryStore:  toolSet.MemoryStore,
 		convStore:    convStore,
@@ -154,7 +169,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 
 	for i := 0; i < maxToolRounds; i++ {
 		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:    groqModel,
+			Model:    parentModel,
 			Messages: messages,
 			Tools:    toolDefs,
 		})
@@ -174,19 +189,25 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			messages = append(messages, msgResp)
 			for _, tc := range msgResp.ToolCalls {
 				args := tc.Function.Arguments
-				if tc.Function.Name == "save_memory" || tc.Function.Name == "read_memory" {
-					if injected, err := tools.InjectMemoryArgs(args, msg.Platform, msg.UserID); err == nil {
-						args = injected
+				var result string
+				if tc.Function.Name == "spawn_subagents" {
+					result = a.handleSpawnSubagents(ctx, args, msg)
+				} else {
+					if tc.Function.Name == "save_memory" || tc.Function.Name == "read_memory" {
+						if injected, err := tools.InjectMemoryArgs(args, msg.Platform, msg.UserID); err == nil {
+							args = injected
+						}
 					}
-				}
-				if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
-					if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-						args = injected
+					if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
+						if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
+							args = injected
+						}
 					}
-				}
-				result, err := a.tools.ExecuteTool(tc.Function.Name, args)
-				if err != nil {
-					result = "Error: " + err.Error()
+					var err error
+					result, err = a.tools.ExecuteTool(tc.Function.Name, args)
+					if err != nil {
+						result = "Error: " + err.Error()
+					}
 				}
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:       openai.ChatMessageRoleTool,
@@ -203,19 +224,25 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
 			})
-			if toolName == "save_memory" || toolName == "read_memory" {
-				if injected, err := tools.InjectMemoryArgs(toolArgs, msg.Platform, msg.UserID); err == nil {
-					toolArgs = injected
+			var result string
+			if toolName == "spawn_subagents" {
+				result = a.handleSpawnSubagents(ctx, toolArgs, msg)
+			} else {
+				if toolName == "save_memory" || toolName == "read_memory" {
+					if injected, err := tools.InjectMemoryArgs(toolArgs, msg.Platform, msg.UserID); err == nil {
+						toolArgs = injected
+					}
 				}
-			}
-			if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
-				if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-					toolArgs = injected
+				if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
+					if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
+						toolArgs = injected
+					}
 				}
-			}
-			result, err := a.tools.ExecuteTool(toolName, toolArgs)
-			if err != nil {
-				result = "Error: " + err.Error()
+				var err error
+				result, err = a.tools.ExecuteTool(toolName, toolArgs)
+				if err != nil {
+					result = "Error: " + err.Error()
+				}
 			}
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
@@ -246,6 +273,45 @@ var (
 	rememberPrefix = regexp.MustCompile(`(?i)^(?:remember|memorize)\s*(?:that|:)?\s*`)
 	rememberName   = regexp.MustCompile(`(?i)^(?:remember|memorize)\s+my\s+name\s+is\s+(.+)$`)
 )
+
+// handleSpawnSubagents parses spawn_subagents args, runs sub-agents concurrently, and returns formatted results.
+func (a *Agent) handleSpawnSubagents(ctx context.Context, argsJSON string, msg gateway.IncomingMessage) string {
+	var args struct {
+		Tasks []string `json:"tasks"`
+		Role  string   `json:"role"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error: invalid spawn_subagents arguments: " + err.Error()
+	}
+	if len(args.Tasks) == 0 {
+		return "Error: tasks cannot be empty."
+	}
+	specs := make([]SubtaskSpec, len(args.Tasks))
+	for i, t := range args.Tasks {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		specs[i] = SubtaskSpec{Task: t, Role: args.Role, Index: i}
+	}
+	// Filter out empty tasks
+	n := 0
+	for _, s := range specs {
+		if s.Task != "" {
+			specs[n] = s
+			n++
+		}
+	}
+	specs = specs[:n]
+	if len(specs) == 0 {
+		return "Error: no valid tasks provided."
+	}
+	results, err := a.RunSubagents(ctx, specs, msg, nil)
+	if err != nil {
+		return "Error running sub-agents: " + err.Error()
+	}
+	return FormatSubagentResults(results)
+}
 
 // extractRememberContent returns content to save when user explicitly asks to remember something.
 func extractRememberContent(text string) string {

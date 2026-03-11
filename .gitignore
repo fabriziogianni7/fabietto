@@ -16,3 +16,4 @@ conversation_embeddings/*.jsonl
 *.test
 coverage.out
 divine.txt
+reminders/reminders.jsonl

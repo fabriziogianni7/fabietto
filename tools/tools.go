@@ -21,7 +21,14 @@ import (
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents"}
+
+// ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
+var ReadOnlyToolNames = map[string]bool{
+	"read_file":   true,
+	"web_search":  true,
+	"read_memory": true,
+}
 
 // Tools holds tool execution state (e.g. API keys). Create with NewTools.
 type Tools struct {
@@ -246,7 +253,40 @@ func Definitions() []openai.Tool {
 				},
 			},
 		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "spawn_subagents",
+				Description: "Delegate independent subtasks to concurrent sub-agents. Use when a request can be parallelized (e.g. research multiple topics, compare several options, gather info from different angles). Each subtask runs in parallel. Sub-agents can use read_file, web_search, read_memory. Pass 2-5 focused tasks for best results.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"tasks": {Type: jsonschema.Array, Description: "List of independent subtasks to run in parallel", Items: &jsonschema.Definition{Type: jsonschema.String}},
+						"role":  {Type: jsonschema.String, Description: "Optional role for sub-agents (e.g. 'research specialist')"},
+					},
+					Required: []string{"tasks"},
+				},
+			},
+		},
 	}
+}
+
+// IsAllowedForSubagent returns true if the tool can be used by stateless sub-agents.
+func IsAllowedForSubagent(name string) bool {
+	return ReadOnlyToolNames[name]
+}
+
+// DefinitionsForSubagent returns only read-only tools (read_file, web_search, read_memory)
+// for stateless sub-agents that must not write session, memory, or reminders.
+func DefinitionsForSubagent() []openai.Tool {
+	all := Definitions()
+	out := make([]openai.Tool, 0, len(ReadOnlyToolNames))
+	for _, t := range all {
+		if t.Function != nil && ReadOnlyToolNames[t.Function.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ExecuteTool runs the named tool with the given JSON arguments and returns the result.

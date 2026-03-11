@@ -31,7 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
-	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), or schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder) when relevant."
+	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), or spawn parallel sub-agents (spawn_subagents) when a task can be parallelized."
 	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
