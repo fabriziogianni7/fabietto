@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"math/big"
 	"os"
+	"path/filepath"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"custom-agent/agent"
 	"custom-agent/config"
@@ -17,6 +21,12 @@ import (
 	"custom-agent/reminders"
 	"custom-agent/sessionqueue"
 	"custom-agent/tools"
+	"custom-agent/wallet"
+	"custom-agent/wallet/approval"
+	"custom-agent/wallet/chains"
+	"custom-agent/wallet/history"
+	"custom-agent/wallet/policy"
+	"custom-agent/wallet/signer"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -31,8 +41,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
-	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), or spawn parallel sub-agents (spawn_subagents) when a task can be parallelized."
-	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
+	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), or spawn parallel sub-agents (spawn_subagents) when a task can be parallelized."
+	if cfg.WalletEnabled() {
+		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted."
+	}
+	toolInstruction += "\n"
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
 	llmConfig.BaseURL = "https://api.groq.com/openai/v1"
@@ -61,21 +74,9 @@ func main() {
 	reminderStore := reminders.NewStore()
 
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
-
 	senderRegistry := gateway.NewSenderRegistry()
 
-	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
-		return a.HandleMessage(context.Background(), msg)
-	})
-	handler := func(msg gateway.IncomingMessage) string {
-		return queue.Process(msg)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start enabled gateways and register Senders for outbound (reminders)
+	// Build gateways and register Senders (for reminders and wallet approval notifications)
 	type gwStarter struct {
 		name string
 		gw   gateway.Gateway
@@ -99,6 +100,62 @@ func main() {
 		senderRegistry.Register("signal", sg)
 		starters = append(starters, gwStarter{"signal", sg})
 	}
+
+	// Wallet: optional. When enabled, create chain registry, signer, policy, approval, history, service.
+	if cfg.WalletEnabled() {
+		chainRegistry, err := chains.BuildFromConfig(cfg.WalletChainsJSON, cfg.EVM_RPC_URL, cfg.ChainID, cfg.WalletDefaultChainID)
+		if err != nil {
+			log.Fatalf("wallet chain registry: %v", err)
+		}
+		sgn, err := signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
+		if err != nil {
+			log.Fatalf("wallet signer: %v", err)
+		}
+		signer.UnsetEnvKey(cfg.WalletPrivateKeyEnv)
+		policyCfg := policy.DefaultConfig()
+		if cfg.WalletNativeSpendLimit != "" {
+			if n, ok := new(big.Int).SetString(cfg.WalletNativeSpendLimit, 10); ok {
+				policyCfg.NativeSpendLimitWei = n
+			}
+		}
+		policyEngine := policy.NewEngine(policyCfg)
+		approvalDir := cfg.WalletApprovalDir
+		if approvalDir == "" {
+			approvalDir = "wallet-approvals"
+		}
+		approvalStore := approval.NewStore(approvalDir, 15*time.Minute)
+		notifier := wallet.NewSenderNotifier(senderRegistry)
+		historyDir := filepath.Join(filepath.Dir(approvalDir), "wallet-history")
+		historyStore := history.NewStore(historyDir)
+		walletSvc := wallet.NewService(chainRegistry, sgn, policyEngine, approvalStore, notifier, historyStore)
+		toolSet.SetWallet(walletSvc)
+		log.Printf("[wallet] enabled, address %s, default chain %d, backend=%s", walletSvc.WalletAddress(), walletSvc.DefaultChainID(), cfg.WalletSignerBackend)
+	}
+
+	// Build system prompt: personality + tools, then append WALLET.md when wallet is enabled
+	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
+	if toolSet.Wallet != nil {
+		walletDoc, err := os.ReadFile("WALLET.md")
+		if err != nil {
+			log.Fatalf("failed to load WALLET.md: %v", err)
+		}
+		walletBlock := strings.Replace(string(walletDoc), "{{WALLET_ADDRESS}}", toolSet.Wallet.WalletAddress(), 1)
+		walletBlock = strings.Replace(walletBlock, "{{DEFAULT_CHAIN_ID}}", strconv.FormatInt(toolSet.Wallet.DefaultChainID(), 10), 1)
+		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
+	}
+
+	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
+
+	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
+		return a.HandleMessage(context.Background(), msg)
+	})
+	handler := func(msg gateway.IncomingMessage) string {
+		return queue.Process(msg)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	for _, s := range starters {
 		gw, name := s.gw, s.name
 		go func() {

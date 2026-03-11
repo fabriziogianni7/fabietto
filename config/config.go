@@ -21,6 +21,18 @@ func parseInt(s string, defaultVal int) int {
 	return n
 }
 
+func parseInt64(s string, defaultVal int64) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultVal
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
 // Config holds validated application configuration.
 type Config struct {
 	TelegramBotToken     string
@@ -33,6 +45,19 @@ type Config struct {
 	CompactionThreshold  int    // optional, token count to trigger compaction (default 4000)
 	OllamaURL            string // optional, e.g. "http://localhost:11434" for embeddings
 	OllamaEmbedModel     string // optional, e.g. "nomic-embed-text" (default)
+
+	// Wallet (optional). If EVM_RPC_URL and signer are set, wallet tools are enabled.
+	EVM_RPC_URL          string // e.g. "https://eth-mainnet.g.alchemy.com/v2/..."
+	ChainID              int64  // e.g. 1 for mainnet (used when WALLET_CHAINS not set)
+	WalletSignerBackend  string // "env" | "kms" | "hsm" (default: env)
+	WalletPrivateKeyEnv  string // env var name for key (default: WALLET_PRIVATE_KEY)
+	WalletAccountMode    string // "eoa" | "smart" (default: eoa)
+	WalletNativeSpendLimit string // wei string for auto-allow threshold, "0" = require approval for all
+	WalletApprovalDir    string // dir for approval persistence (optional)
+
+	// Multichain: JSON array of {chain_id, rpc_url, explorer, name}. If empty, use EVM_RPC_URL+CHAIN_ID.
+	WalletChainsJSON     string // e.g. [{"chain_id":1,"rpc_url":"...","explorer":"https://etherscan.io","name":"Ethereum"}]
+	WalletDefaultChainID int64  // default chain when chain_id omitted (default: from first chain or CHAIN_ID)
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -51,6 +76,16 @@ func Load() (*Config, error) {
 		CompactionThreshold: parseInt(os.Getenv("CONTEXT_COMPACTION_THRESHOLD"), 4000),
 		OllamaURL:        strings.TrimSpace(os.Getenv("OLLAMA_URL")),
 		OllamaEmbedModel: strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
+
+		EVM_RPC_URL:         strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
+		ChainID:             parseInt64(os.Getenv("CHAIN_ID"), 1),
+		WalletSignerBackend: strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
+		WalletPrivateKeyEnv: strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
+		WalletAccountMode:   strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
+		WalletNativeSpendLimit: strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
+		WalletApprovalDir:   strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
+		WalletChainsJSON:    strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
+		WalletDefaultChainID: parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -81,9 +116,40 @@ func (c *Config) validate() error {
 		missing = append(missing, "SIGNAL_CLI_URL and SIGNAL_NUMBER must be set together")
 	}
 
+	// Wallet: if EVM_RPC_URL set, require WALLET_PRIVATE_KEY (or backend-specific key)
+	if c.EVM_RPC_URL != "" {
+		if c.WalletSignerBackend == "" {
+			c.WalletSignerBackend = "env"
+		}
+		if c.WalletPrivateKeyEnv == "" {
+			c.WalletPrivateKeyEnv = "WALLET_PRIVATE_KEY"
+		}
+		if c.WalletAccountMode == "" {
+			c.WalletAccountMode = "eoa"
+		}
+	}
+
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required environment variables: %s (set them in .env or export)", strings.Join(missing, ", "))
 	}
 
 	return nil
+}
+
+// WalletEnabled returns true if wallet should be initialized (RPC URL and signer key set).
+func (c *Config) WalletEnabled() bool {
+	if c.EVM_RPC_URL == "" {
+		return false
+	}
+	if c.WalletSignerBackend == "" {
+		c.WalletSignerBackend = "env"
+	}
+	if c.WalletPrivateKeyEnv == "" {
+		c.WalletPrivateKeyEnv = "WALLET_PRIVATE_KEY"
+	}
+	// For env backend, require the key to be set
+	if c.WalletSignerBackend == "env" {
+		return os.Getenv(c.WalletPrivateKeyEnv) != ""
+	}
+	return true
 }

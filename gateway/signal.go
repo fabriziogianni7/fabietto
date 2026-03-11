@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"custom-agent/wallet/redact"
 )
 
 // SignalGateway implements Gateway for Signal via signal-cli-rest-api.
@@ -107,7 +109,7 @@ func (g *SignalGateway) Run(ctx context.Context, handler Handler) error {
 					continue
 				}
 
-				log.Printf("[signal] [%s] %s", sender, text)
+				log.Printf("[signal] [%s] %s", sender, redact.Redact(text))
 
 				incoming := IncomingMessage{
 					Platform:  "signal",

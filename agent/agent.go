@@ -13,6 +13,7 @@ import (
 	"custom-agent/memory"
 	"custom-agent/session"
 	"custom-agent/tools"
+	"custom-agent/wallet/redact"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -81,13 +82,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			if err := a.memoryStore.Save(msg.Platform, msg.UserID, content, ""); err != nil {
 				log.Printf("[agent] proactive save_memory failed: %v", err)
 			} else {
-				log.Printf("[agent] proactively saved memory: %s", content)
+				log.Printf("[agent] proactively saved memory: %s", redact.Redact(content))
 			}
 		}
 	}
 
 	// Handle approval messages
 	if cmd, ok := tools.ParseApprovalMessage(text); ok {
+		if handled, result := a.tools.TryWalletApproval(ctx, cmd, msg.Platform, msg.UserID, msg.ChatID); handled {
+			return result
+		}
 		if err := tools.ApproveCommand(cmd); err != nil {
 			return "Approval failed: " + err.Error()
 		}
@@ -136,6 +140,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Role:    openai.ChatMessageRoleSystem,
 		Content: a.systemPrompt,
 	})
+	// When user wants to send and we have prior context, inject reminder so LLM doesn't repeat prior "Done!" without calling the tool
+	if a.tools.Wallet != nil && len(recent) > 0 && wantsWalletSend(text) {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: "CRITICAL: The user is asking to send funds. You MUST call wallet_execute_transfer now. Do NOT respond with text claiming you sent—only a tool call actually executes. Reply with a tool call.",
+		})
+	}
 	for _, block := range contextBlocks {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
@@ -144,7 +155,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	}
 	if summaryBlock != "" {
 		log.Printf("[agent] context compacted: %d history messages → summary + %d recent", len(history), len(recent))
-		log.Printf("[agent] compacted summary:\n%s", summaryBlock)
+		log.Printf("[agent] compacted summary:\n%s", redact.Redact(summaryBlock))
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
 			Content: summaryBlock,
@@ -166,6 +177,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	})
 
 	toolDefs := tools.Definitions()
+	mustExecuteWallet := a.tools.Wallet != nil && wantsWalletSend(text)
+	walletToolUsed := false
 
 	for i := 0; i < maxToolRounds; i++ {
 		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -188,6 +201,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if len(msgResp.ToolCalls) > 0 {
 			messages = append(messages, msgResp)
 			for _, tc := range msgResp.ToolCalls {
+				if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
+					walletToolUsed = true
+				}
 				args := tc.Function.Arguments
 				var result string
 				if tc.Function.Name == "spawn_subagents" {
@@ -200,6 +216,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 					}
 					if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
 						if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
+							args = injected
+						}
+					}
+					if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
+						if injected, err := tools.InjectWalletArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
 							args = injected
 						}
 					}
@@ -224,6 +245,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
 			})
+			if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
+				walletToolUsed = true
+			}
 			var result string
 			if toolName == "spawn_subagents" {
 				result = a.handleSpawnSubagents(ctx, toolArgs, msg)
@@ -235,6 +259,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				}
 				if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
 					if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
+						toolArgs = injected
+					}
+				}
+				if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
+					if injected, err := tools.InjectWalletArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
 						toolArgs = injected
 					}
 				}
@@ -258,6 +287,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if reply == "" {
 			return "I didn't get a response. Try again?"
 		}
+		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
+			messages = append(messages, openai.ChatCompletionMessage{
+				Role: openai.ChatMessageRoleSystem,
+				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
+			})
+			continue
+		}
 		_ = session.Append(msg.Platform, msg.UserID, text, reply)
 		if a.convStore != nil {
 			_ = a.convStore.Add(msg.Platform, msg.UserID, "user", text)
@@ -270,9 +306,27 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 }
 
 var (
-	rememberPrefix = regexp.MustCompile(`(?i)^(?:remember|memorize)\s*(?:that|:)?\s*`)
-	rememberName   = regexp.MustCompile(`(?i)^(?:remember|memorize)\s+my\s+name\s+is\s+(.+)$`)
+	rememberPrefix   = regexp.MustCompile(`(?i)^(?:remember|memorize)\s*(?:that|:)?\s*`)
+	rememberName     = regexp.MustCompile(`(?i)^(?:remember|memorize)\s+my\s+name\s+is\s+(.+)$`)
+	walletSendIntent = regexp.MustCompile(`(?i)(send|transfer|pay|invio)\s+.*(0x[0-9a-fA-F]{40}|eth|wei|matic)|0x[0-9a-fA-F]{40}.*(send|transfer)`)
+	walletSentClaim  = regexp.MustCompile(`(?i)(done!? i've sent|i've sent|i sent|transaction hash|hash:\s*0x|explorer:\s*https?://|sent\s+.*\s+to\s+0x[0-9a-fA-F]{40})`)
 )
+
+func wantsWalletSend(text string) bool {
+	text = strings.TrimSpace(text)
+	if len(text) < 8 {
+		return false
+	}
+	return walletSendIntent.MatchString(text)
+}
+
+func claimsWalletWasSent(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	return walletSentClaim.MatchString(text)
+}
 
 // handleSpawnSubagents parses spawn_subagents args, runs sub-agents concurrently, and returns formatted results.
 func (a *Agent) handleSpawnSubagents(ctx context.Context, argsJSON string, msg gateway.IncomingMessage) string {

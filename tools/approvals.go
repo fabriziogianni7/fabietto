@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"custom-agent/wallet/redact"
 )
 
 const approvalsFile = "exec-approvals.json"
@@ -17,12 +19,20 @@ var blockedPatterns = []string{
 	"chmod -R 777", "chmod 777",
 	":(){ :|:& };:", // fork bomb
 	"sudo ",
+	// Secret exfiltration
+	"printenv", "env | grep",
+	"echo $", "echo \"$", "echo '$",
 }
 
-// Safe commands that run without approval (exact match of first word)
+func init() {
+	blockedPatterns = append(blockedPatterns, redact.BlockedPatternsForPrompts...)
+}
+
+// Safe commands that run without approval (exact match of first word).
+// echo is removed: it can exfiltrate env vars (e.g. echo $PRIVATE_KEY).
 var safeCommands = []string{
-	"ls", "pwd", "echo", "whoami", "date", "id",
-	"cat", "head", "tail", "wc", "file",
+	"ls", "pwd", "whoami", "date", "id",
+	"head", "tail", "wc", "file",
 }
 
 // LoadApprovals reads approved commands from exec-approvals.json.
@@ -60,6 +70,14 @@ func IsBlocked(cmd string) bool {
 	}
 	// Block rm -rf with path traversal
 	if matched, _ := regexp.MatchString(`rm\s+-rf\s+[/\*]`, cmd); matched {
+		return true
+	}
+	// Block cat .env
+	if matched, _ := regexp.MatchString(`cat\s+\.env`, cmd); matched {
+		return true
+	}
+	// Block commands that might contain secrets
+	if redact.ContainsSecret(cmd) {
 		return true
 	}
 	return false

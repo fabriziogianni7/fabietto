@@ -11,6 +11,7 @@ import (
 
 	"custom-agent/embedding"
 	"custom-agent/session"
+	"custom-agent/wallet/redact"
 )
 
 const (
@@ -49,7 +50,7 @@ func (s *Store) Save(platform, userID, content, tags string) error {
 
 	m := Memory{
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
-		Content:   strings.TrimSpace(content),
+		Content:   redact.Redact(strings.TrimSpace(content)),
 		Tags:      strings.TrimSpace(tags),
 		CreatedAt: time.Now(),
 	}

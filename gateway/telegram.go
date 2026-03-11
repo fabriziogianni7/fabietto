@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"custom-agent/wallet/redact"
 )
 
 // TelegramGateway implements Gateway and Sender for Telegram.
@@ -67,7 +69,7 @@ func (g *TelegramGateway) Run(ctx context.Context, handler Handler) error {
 			}
 
 			msg := update.Message
-			log.Printf("[telegram] [%s] %s", msg.From.UserName, msg.Text)
+			log.Printf("[telegram] [%s] %s", msg.From.UserName, redact.Redact(msg.Text))
 
 			incoming := IncomingMessage{
 				Platform:  "telegram",

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
@@ -30,11 +31,25 @@ var ReadOnlyToolNames = map[string]bool{
 	"read_memory": true,
 }
 
+// WalletService is the interface for policy-gated wallet operations. Optional.
+// Implemented by *wallet.Service when wallet is enabled.
+// chainID 0 = default chain.
+type WalletService interface {
+	WalletAddress() string
+	DefaultChainID() int64
+	GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error)
+	ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error)
+	ExecuteContractCall(ctx context.Context, chainID int64, to, dataHex, valueWei, platform, userID, chatID string) (string, error)
+	ExecuteApproved(ctx context.Context, approvalID, platform, userID, chatID string) (string, error)
+	ListTransactions(chainID int64, limit int) (string, error)
+}
+
 // Tools holds tool execution state (e.g. API keys). Create with NewTools.
 type Tools struct {
 	BraveSearchAPIKey string
 	MemoryStore       *memory.Store
 	ReminderStore     *reminders.Store
+	Wallet            WalletService // optional; when set, wallet tools are available
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -49,6 +64,11 @@ func NewToolsWithReminderStore(braveSearchAPIKey string, memoryStore *memory.Sto
 		MemoryStore:       memoryStore,
 		ReminderStore:     reminderStore,
 	}
+}
+
+// SetWallet sets the optional wallet service. Call after construction when wallet is enabled.
+func (t *Tools) SetWallet(w WalletService) {
+	t.Wallet = w
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -268,6 +288,66 @@ func Definitions() []openai.Tool {
 				},
 			},
 		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_get_balance",
+				Description: "Get the native token (ETH) balance of the wallet in wei. Use when the user asks about balance or funds. Omit chain_id for default chain.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_execute_transfer",
+				Description: "REQUIRED to send ETH: call this tool when the user asks to send or transfer. You cannot send without invoking this tool. Params: to (0x...), value_wei (decimal string). Returns tx hash and explorer link. Requires approval if above policy limits.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"to":         {Type: jsonschema.String, Description: "Recipient address (0x...)"},
+						"value_wei": {Type: jsonschema.String, Description: "Amount in wei as decimal string"},
+						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"to", "value_wei"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_execute_contract_call",
+				Description: "REQUIRED to execute contract calls: call this tool when the user asks to call a contract or send to a contract. You cannot execute without invoking this tool. Params: to, data (hex), value_wei (0 for none). Returns tx hash and explorer link.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"to":         {Type: jsonschema.String, Description: "Contract address (0x...)"},
+						"data":       {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
+						"value_wei": {Type: jsonschema.String, Description: "ETH to send in wei (0 for none)"},
+						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"to", "data"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_list_transactions",
+				Description: "List recent agent-initiated wallet transactions with chain, status, hash, and explorer link. Use when the user asks about transaction history.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID to filter. Omit for all chains."},
+						"limit":    {Type: jsonschema.Integer, Description: "Max transactions to return (default 20)."},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -317,9 +397,141 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.listReminders(strArgs)
 	case "delete_reminder":
 		return t.deleteReminder(strArgs)
+	case "wallet_get_balance":
+		return t.walletGetBalance(strArgs, args)
+	case "wallet_execute_transfer":
+		return t.walletExecuteTransfer(strArgs, args)
+	case "wallet_execute_contract_call":
+		return t.walletExecuteContractCall(strArgs, args)
+	case "wallet_list_transactions":
+		return t.walletListTransactions(strArgs, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func parseChainID(args map[string]string, rawArgs map[string]interface{}) int64 {
+	if rawArgs != nil {
+		if v := rawArgs["chain_id"]; v != nil {
+			switch n := v.(type) {
+			case float64:
+				if n > 0 {
+					return int64(n)
+				}
+			}
+		}
+	}
+	if s := args["chain_id"]; s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func (t *Tools) walletGetBalance(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	bal, err := t.Wallet.GetBalanceString(context.Background(), chainID, nil)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return "Balance: " + bal + " wei", nil
+}
+
+func (t *Tools) walletExecuteTransfer(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	platform := args["platform"]
+	userID := args["user_id"]
+	chatID := args["chat_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context (platform, user_id).", nil
+	}
+	if chatID == "" {
+		chatID = userID
+	}
+	chainID := parseChainID(args, rawArgs)
+	return t.Wallet.ExecuteTransfer(context.Background(), chainID, args["to"], args["value_wei"], platform, userID, chatID)
+}
+
+func (t *Tools) walletExecuteContractCall(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	platform := args["platform"]
+	userID := args["user_id"]
+	chatID := args["chat_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context (platform, user_id).", nil
+	}
+	if chatID == "" {
+		chatID = userID
+	}
+	valueWei := args["value_wei"]
+	if valueWei == "" {
+		valueWei = "0"
+	}
+	chainID := parseChainID(args, rawArgs)
+	return t.Wallet.ExecuteContractCall(context.Background(), chainID, args["to"], args["data"], valueWei, platform, userID, chatID)
+}
+
+func (t *Tools) walletListTransactions(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	limit := 20
+	if rawArgs != nil {
+		if v := rawArgs["limit"]; v != nil {
+			switch n := v.(type) {
+			case float64:
+				if n > 0 && n <= 100 {
+					limit = int(n)
+				}
+			}
+		}
+	}
+	if s := args["limit"]; s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	return t.Wallet.ListTransactions(chainID, limit)
+}
+
+// InjectWalletArgs adds platform, user_id, chat_id to args for wallet tools.
+func InjectWalletArgs(argsJSON, platform, userID, chatID string) (string, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", err
+	}
+	args["platform"] = platform
+	args["user_id"] = userID
+	args["chat_id"] = chatID
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// TryWalletApproval attempts to execute a wallet approval by ID. Returns (true, result) if handled.
+func (t *Tools) TryWalletApproval(ctx context.Context, cmd, platform, userID, chatID string) (bool, string) {
+	if t.Wallet == nil {
+		return false, ""
+	}
+	if !strings.HasPrefix(strings.TrimSpace(cmd), "tx_") {
+		return false, ""
+	}
+	result, err := t.Wallet.ExecuteApproved(ctx, strings.TrimSpace(cmd), platform, userID, chatID)
+	if err != nil {
+		return true, "Approval failed: " + err.Error()
+	}
+	return true, result
 }
 
 func toStringMap(m map[string]interface{}) map[string]string {

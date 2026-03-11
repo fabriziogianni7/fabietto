@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
+
+	"custom-agent/wallet/redact"
 )
 
 // DiscordGateway implements Gateway and Sender for Discord.
@@ -53,7 +55,7 @@ func (g *DiscordGateway) Run(ctx context.Context, handler Handler) error {
 			return
 		}
 
-		log.Printf("[discord] [%s] %s", m.Author.Username, m.Content)
+		log.Printf("[discord] [%s] %s", m.Author.Username, redact.Redact(m.Content))
 
 		incoming := IncomingMessage{
 			Platform:  "discord",

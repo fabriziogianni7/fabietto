@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"custom-agent/wallet/redact"
 )
 
 const (
@@ -94,10 +96,10 @@ func Append(platform, userID string, userContent, assistantContent string) error
 	defer f.Close()
 
 	encoder := json.NewEncoder(f)
-	if err := encoder.Encode(Message{Role: "user", Content: userContent}); err != nil {
+	if err := encoder.Encode(Message{Role: "user", Content: redact.Redact(userContent)}); err != nil {
 		return err
 	}
-	if err := encoder.Encode(Message{Role: "assistant", Content: assistantContent}); err != nil {
+	if err := encoder.Encode(Message{Role: "assistant", Content: redact.Redact(assistantContent)}); err != nil {
 		return err
 	}
 
