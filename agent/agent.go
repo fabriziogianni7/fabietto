@@ -179,6 +179,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 						args = injected
 					}
 				}
+				if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
+					if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
+						args = injected
+					}
+				}
 				result, err := a.tools.ExecuteTool(tc.Function.Name, args)
 				if err != nil {
 					result = "Error: " + err.Error()
@@ -200,6 +205,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			})
 			if toolName == "save_memory" || toolName == "read_memory" {
 				if injected, err := tools.InjectMemoryArgs(toolArgs, msg.Platform, msg.UserID); err == nil {
+					toolArgs = injected
+				}
+			}
+			if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
+				if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
 					toolArgs = injected
 				}
 			}

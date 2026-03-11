@@ -5,18 +5,33 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 )
 
-// DiscordGateway implements Gateway for Discord.
+// DiscordGateway implements Gateway and Sender for Discord.
 type DiscordGateway struct {
-	token string
+	token   string
+	session *discordgo.Session
+	mu      sync.RWMutex
 }
 
 // NewDiscord creates a Discord gateway. Token must be non-empty.
 func NewDiscord(token string) *DiscordGateway {
 	return &DiscordGateway{token: token}
+}
+
+// Send delivers an outbound message to the channel. Implements Sender.
+func (g *DiscordGateway) Send(ctx context.Context, platform, userID, chatID, text string) error {
+	g.mu.RLock()
+	s := g.session
+	g.mu.RUnlock()
+	if s == nil {
+		return fmt.Errorf("discord: session not initialized")
+	}
+	_, err := s.ChannelMessageSend(chatID, text)
+	return err
 }
 
 // Run starts the Discord bot and processes messages until ctx is cancelled.
@@ -25,6 +40,10 @@ func (g *DiscordGateway) Run(ctx context.Context, handler Handler) error {
 	if err != nil {
 		return fmt.Errorf("discord: %w", err)
 	}
+
+	g.mu.Lock()
+	g.session = s
+	g.mu.Unlock()
 
 	s.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if m.Author.Bot {

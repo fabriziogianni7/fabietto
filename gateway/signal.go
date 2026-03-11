@@ -131,6 +131,16 @@ func (g *SignalGateway) Run(ctx context.Context, handler Handler) error {
 	}
 }
 
+// Send delivers an outbound message to the recipient. Implements Sender.
+// For Signal, chatID and userID are typically the recipient number.
+func (g *SignalGateway) Send(ctx context.Context, platform, userID, chatID, text string) error {
+	recipient := chatID
+	if recipient == "" {
+		recipient = userID
+	}
+	return g.send(ctx, recipient, text)
+}
+
 func (g *SignalGateway) send(ctx context.Context, recipient, message string) error {
 	body := map[string]interface{}{
 		"number":     g.number,

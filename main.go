@@ -14,6 +14,7 @@ import (
 	"custom-agent/embedding"
 	"custom-agent/gateway"
 	"custom-agent/memory"
+	"custom-agent/reminders"
 	"custom-agent/sessionqueue"
 	"custom-agent/tools"
 
@@ -30,7 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
-	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, or use memory (save_memory, read_memory) when relevant."
+	const toolInstruction = "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), or schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder) when relevant."
 	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
@@ -57,9 +58,12 @@ func main() {
 	}
 	memoryStore = memory.NewStore(embedder)
 	convStore = conversation.NewStore(embedder)
+	reminderStore := reminders.NewStore()
 
-	toolSet := tools.NewTools(cfg.BraveSearchAPIKey, memoryStore)
+	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
 	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
+
+	senderRegistry := gateway.NewSenderRegistry()
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)
@@ -71,23 +75,29 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start enabled gateways
+	// Start enabled gateways and register Senders for outbound (reminders)
 	type gwStarter struct {
 		name string
 		gw   gateway.Gateway
 	}
 	var starters []gwStarter
 	if cfg.TelegramBotToken != "" {
-		starters = append(starters, gwStarter{"telegram", gateway.NewTelegram(cfg.TelegramBotToken)})
+		tg := gateway.NewTelegram(cfg.TelegramBotToken)
+		senderRegistry.Register("telegram", tg)
+		starters = append(starters, gwStarter{"telegram", tg})
 	}
 	if cfg.DiscordToken != "" {
-		starters = append(starters, gwStarter{"discord", gateway.NewDiscord(cfg.DiscordToken)})
+		dc := gateway.NewDiscord(cfg.DiscordToken)
+		senderRegistry.Register("discord", dc)
+		starters = append(starters, gwStarter{"discord", dc})
 	}
 	if cfg.HTTPPort != "" {
 		starters = append(starters, gwStarter{"http", gateway.NewHTTP(cfg.HTTPPort)})
 	}
 	if cfg.SignalCliURL != "" && cfg.SignalNumber != "" {
-		starters = append(starters, gwStarter{"signal", gateway.NewSignal(cfg.SignalCliURL, cfg.SignalNumber)})
+		sg := gateway.NewSignal(cfg.SignalCliURL, cfg.SignalNumber)
+		senderRegistry.Register("signal", sg)
+		starters = append(starters, gwStarter{"signal", sg})
 	}
 	for _, s := range starters {
 		gw, name := s.gw, s.name
@@ -97,6 +107,10 @@ func main() {
 			}
 		}()
 	}
+
+	// Start reminders cron (sends scheduled messages via SenderRegistry)
+	cronRunner := reminders.NewRunner(reminderStore, senderRegistry)
+	go cronRunner.Start(ctx)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

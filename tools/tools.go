@@ -14,25 +14,33 @@ import (
 	"strings"
 
 	"custom-agent/memory"
+	"custom-agent/reminders"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder"}
 
 // Tools holds tool execution state (e.g. API keys). Create with NewTools.
 type Tools struct {
 	BraveSearchAPIKey string
 	MemoryStore       *memory.Store
+	ReminderStore     *reminders.Store
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
 func NewTools(braveSearchAPIKey string, memoryStore *memory.Store) *Tools {
+	return NewToolsWithReminderStore(braveSearchAPIKey, memoryStore, reminders.NewStore())
+}
+
+// NewToolsWithReminderStore creates a Tools instance with the given reminder store (for sharing with cron).
+func NewToolsWithReminderStore(braveSearchAPIKey string, memoryStore *memory.Store, reminderStore *reminders.Store) *Tools {
 	return &Tools{
 		BraveSearchAPIKey: braveSearchAPIKey,
 		MemoryStore:       memoryStore,
+		ReminderStore:     reminderStore,
 	}
 }
 
@@ -198,6 +206,46 @@ func Definitions() []openai.Tool {
 				},
 			},
 		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "create_scheduled_reminder",
+				Description: "Schedule a recurring reminder to send the user a message at a specific time. Use when the user asks to be reminded (e.g. 'remind me every day at 9am', 'check in with me every Monday'). Schedule format: cron expression (min hour day month weekday). Examples: '0 9 * * *' = daily 9am, '0 10 * * 1' = Mondays 10am, '30 8 * * 1-5' = weekdays 8:30am.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"schedule": {Type: jsonschema.String, Description: "Cron expression. 5-field: min hour day month weekday (e.g. 0 9 * * * daily 9am, */10 * * * * every 10 min). 6-field: sec min hour day month weekday (e.g. */10 * * * * * every 10 sec)."},
+						"message":  {Type: jsonschema.String, Description: "The message to send when the reminder triggers"},
+					},
+					Required: []string{"schedule", "message"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "list_reminders",
+				Description: "List the user's scheduled reminders. Use when the user asks what reminders they have or to show their schedule.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "delete_reminder",
+				Description: "Delete a scheduled reminder by ID. Use when the user wants to cancel or remove a reminder. Get the ID from list_reminders.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"id": {Type: jsonschema.String, Description: "The reminder ID to delete"},
+					},
+					Required: []string{"id"},
+				},
+			},
+		},
 	}
 }
 
@@ -223,6 +271,12 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.saveMemory(strArgs)
 	case "read_memory":
 		return t.readMemory(strArgs, args)
+	case "create_scheduled_reminder":
+		return t.createScheduledReminder(strArgs)
+	case "list_reminders":
+		return t.listReminders(strArgs)
+	case "delete_reminder":
+		return t.deleteReminder(strArgs)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -254,6 +308,22 @@ func InjectMemoryArgs(argsJSON, platform, userID string) (string, error) {
 	}
 	args["platform"] = platform
 	args["user_id"] = userID
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// InjectReminderArgs adds platform, user_id, and chat_id to args for reminder tools.
+func InjectReminderArgs(argsJSON, platform, userID, chatID string) (string, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "", err
+	}
+	args["platform"] = platform
+	args["user_id"] = userID
+	args["chat_id"] = chatID
 	b, err := json.Marshal(args)
 	if err != nil {
 		return "", err
@@ -325,6 +395,71 @@ func (t *Tools) readMemory(args map[string]string, rawArgs map[string]interface{
 		}
 	}
 	return b.String(), nil
+}
+
+func (t *Tools) createScheduledReminder(args map[string]string) (string, error) {
+	if t.ReminderStore == nil {
+		return "Reminders not configured.", nil
+	}
+	schedule := args["schedule"]
+	message := args["message"]
+	platform := args["platform"]
+	userID := args["user_id"]
+	chatID := args["chat_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context.", nil
+	}
+	if strings.TrimSpace(schedule) == "" || strings.TrimSpace(message) == "" {
+		return "Error: schedule and message are required.", nil
+	}
+	if chatID == "" {
+		chatID = userID
+	}
+	id, err := t.ReminderStore.Add(platform, userID, chatID, schedule, message)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return fmt.Sprintf("Reminder created (ID: %s). You'll receive \"%s\" on schedule: %s", id, message, schedule), nil
+}
+
+func (t *Tools) listReminders(args map[string]string) (string, error) {
+	if t.ReminderStore == nil {
+		return "Reminders not configured.", nil
+	}
+	platform := args["platform"]
+	userID := args["user_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context.", nil
+	}
+	list, err := t.ReminderStore.ListForPlatform(platform, userID)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if len(list) == 0 {
+		return "No reminders scheduled.", nil
+	}
+	var b strings.Builder
+	for i, r := range list {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(fmt.Sprintf("- [%s] %s → \"%s\" (schedule: %s)", r.ID, r.CreatedAt.Format("2006-01-02"), r.Message, r.Schedule))
+	}
+	return b.String(), nil
+}
+
+func (t *Tools) deleteReminder(args map[string]string) (string, error) {
+	if t.ReminderStore == nil {
+		return "Reminders not configured.", nil
+	}
+	id := args["id"]
+	if strings.TrimSpace(id) == "" {
+		return "Error: reminder ID is required.", nil
+	}
+	if err := t.ReminderStore.Delete(id, args["platform"], args["user_id"]); err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return "Reminder deleted.", nil
 }
 
 func runCommand(command string) (string, error) {
