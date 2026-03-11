@@ -123,6 +123,10 @@ func (g *SignalGateway) Run(ctx context.Context, handler Handler) error {
 					log.Printf("[signal] send error: %v", err)
 				}
 			}
+
+			if len(data.Results) == 0 {
+				time.Sleep(2 * time.Second)
+			}
 		}
 	}
 }

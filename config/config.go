@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"custom-agent/tools"
-
 	"github.com/joho/godotenv"
 )
 
@@ -54,8 +52,6 @@ func Load() (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-
-	tools.SetBraveSearchAPIKey(cfg.BraveSearchAPIKey)
 
 	return cfg, nil
 }

@@ -41,6 +41,8 @@ Config is loaded from `.env` (if present) and validated at startup.
 
 Message your bot on Telegram. It will respond using Groq's Llama 3.1 8B model. Conversation history is stored per user in `sessions/` (JSONL files), so the bot remembers context—e.g. "what did I say earlier?" works.
 
+**Commands:** Send `/new` to clear your session and start a fresh conversation.
+
 ## Tools
 
 The bot can use tools when the LLM decides they're helpful:

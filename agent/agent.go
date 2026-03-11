@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"custom-agent/compaction"
@@ -13,7 +14,7 @@ import (
 )
 
 const (
-	groqModel     = "llama-3.1-8b-instant"
+	groqModel     = "moonshotai/kimi-k2-instruct-0905"
 	maxToolRounds = 10
 )
 
@@ -22,15 +23,17 @@ type Agent struct {
 	client       *openai.Client
 	systemPrompt string
 	compactor    *compaction.Compactor
+	tools        *tools.Tools
 }
 
-// New creates an Agent with the given LLM client and system prompt.
+// New creates an Agent with the given LLM client, system prompt, and tools.
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
-func New(client *openai.Client, systemPrompt string, tokenThreshold int) *Agent {
+func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools) *Agent {
 	return &Agent{
 		client:       client,
 		systemPrompt: systemPrompt,
 		compactor:    compaction.NewCompactor(client, groqModel, tokenThreshold),
+		tools:        toolSet,
 	}
 }
 
@@ -39,6 +42,14 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return "Hello! Send me a message and I'll respond."
+	}
+
+	// Handle /new command
+	if text == "/new" {
+		if err := session.Clear(msg.Platform, msg.UserID); err != nil {
+			return "Failed to clear session: " + err.Error()
+		}
+		return "Session cleared. Starting fresh!"
 	}
 
 	// Handle approval messages
@@ -66,6 +77,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Content: a.systemPrompt,
 	})
 	if summaryBlock != "" {
+		log.Printf("[agent] context compacted: %d history messages → summary + %d recent", len(history), len(recent))
+		log.Printf("[agent] compacted summary:\n%s", summaryBlock)
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
 			Content: summaryBlock,
@@ -95,6 +108,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			Tools:    toolDefs,
 		})
 		if err != nil {
+			log.Printf("[agent] LLM error: %v", err)
 			return "Sorry, I couldn't process that. Please try again."
 		}
 
@@ -108,7 +122,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if len(msgResp.ToolCalls) > 0 {
 			messages = append(messages, msgResp)
 			for _, tc := range msgResp.ToolCalls {
-				result, err := tools.ExecuteTool(tc.Function.Name, tc.Function.Arguments)
+				result, err := a.tools.ExecuteTool(tc.Function.Name, tc.Function.Arguments)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
@@ -127,7 +141,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
 			})
-			result, err := tools.ExecuteTool(toolName, toolArgs)
+			result, err := a.tools.ExecuteTool(toolName, toolArgs)
 			if err != nil {
 				result = "Error: " + err.Error()
 			}

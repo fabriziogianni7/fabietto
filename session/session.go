@@ -104,6 +104,28 @@ func Append(platform, userID string, userContent, assistantContent string) error
 	return nil
 }
 
+// Clear removes the session file for a user, starting a fresh conversation on next message.
+// Returns nil if the file didn't exist (already fresh).
+func Clear(platform, userID string) error {
+	key := SessionKey(platform, userID)
+	if key == "" || key == "_" {
+		return nil
+	}
+	path := filepath.Join(sessionDir, key+".jsonl")
+	err := os.Remove(path)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if platform == "telegram" {
+		legacy := filepath.Join(sessionDir, userID+".jsonl")
+		_ = os.Remove(legacy)
+	}
+	return nil
+}
+
 // Recent returns the last maxMessages from the history for LLM context.
 func Recent(messages []Message) []Message {
 	if len(messages) <= maxMessages {

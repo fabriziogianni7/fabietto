@@ -19,12 +19,14 @@ import (
 // Tool names for fallback parsing
 var toolNames = []string{"run_command", "read_file", "write_file", "web_search"}
 
-// braveSearchAPIKey is set at startup for web_search tool.
-var braveSearchAPIKey string
+// Tools holds tool execution state (e.g. API keys). Create with NewTools.
+type Tools struct {
+	BraveSearchAPIKey string
+}
 
-// SetBraveSearchAPIKey sets the API key for Brave Search. Call from main at startup.
-func SetBraveSearchAPIKey(key string) {
-	braveSearchAPIKey = key
+// NewTools creates a Tools instance with the given Brave Search API key.
+func NewTools(braveSearchAPIKey string) *Tools {
+	return &Tools{BraveSearchAPIKey: braveSearchAPIKey}
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -35,8 +37,8 @@ func SetBraveSearchAPIKey(key string) {
 // Returns name, args, and true if found.
 func ParseToolCallFromContent(content string) (name string, args string, ok bool) {
 	patterns := []string{
-		`<` + `%s` + `>\s*(\{)`,            // <toolname>{
-		`<function=` + `%s` + `>\s*(\{)`,   // <function=toolname>{
+		`<` + `%s` + `>\s*(\{)`,           // <toolname>{
+		`<function=` + `%s` + `>\s*(\{)`,  // <function=toolname>{
 		`\(function=` + `%s` + `>\s*(\{)`, // (function=toolname>{ (typo)
 	}
 	for _, n := range toolNames {
@@ -163,7 +165,7 @@ func Definitions() []openai.Tool {
 }
 
 // ExecuteTool runs the named tool with the given JSON arguments and returns the result.
-func ExecuteTool(name, argsJSON string) (string, error) {
+func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 	var args map[string]string
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -177,7 +179,7 @@ func ExecuteTool(name, argsJSON string) (string, error) {
 	case "write_file":
 		return writeFile(args["path"], args["content"])
 	case "web_search":
-		return webSearch(args["query"])
+		return t.webSearch(args["query"])
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -248,8 +250,8 @@ func writeFile(path, content string) (string, error) {
 	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path), nil
 }
 
-func webSearch(query string) (string, error) {
-	if braveSearchAPIKey == "" {
+func (t *Tools) webSearch(query string) (string, error) {
+	if t.BraveSearchAPIKey == "" {
 		return "", fmt.Errorf("BRAVE_SEARCH_API_KEY not configured")
 	}
 
@@ -258,7 +260,7 @@ func webSearch(query string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("search failed: %w", err)
 	}
-	req.Header.Set("X-Subscription-Token", braveSearchAPIKey)
+	req.Header.Set("X-Subscription-Token", t.BraveSearchAPIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

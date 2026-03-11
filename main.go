@@ -11,6 +11,7 @@ import (
 	"custom-agent/agent"
 	"custom-agent/config"
 	"custom-agent/gateway"
+	"custom-agent/tools"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -32,7 +33,8 @@ func main() {
 	llmConfig.BaseURL = "https://api.groq.com/openai/v1"
 	llm := openai.NewClientWithConfig(llmConfig)
 
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold)
+	toolSet := tools.NewTools(cfg.BraveSearchAPIKey)
+	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet)
 
 	handler := func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)
@@ -42,35 +44,28 @@ func main() {
 	defer cancel()
 
 	// Start enabled gateways
+	type gwStarter struct {
+		name string
+		gw   gateway.Gateway
+	}
+	var starters []gwStarter
 	if cfg.TelegramBotToken != "" {
-		go func() {
-			tg := gateway.NewTelegram(cfg.TelegramBotToken)
-			if err := tg.Run(ctx, handler); err != nil && err != context.Canceled {
-				log.Printf("telegram gateway: %v", err)
-			}
-		}()
+		starters = append(starters, gwStarter{"telegram", gateway.NewTelegram(cfg.TelegramBotToken)})
 	}
 	if cfg.DiscordToken != "" {
-		go func() {
-			dg := gateway.NewDiscord(cfg.DiscordToken)
-			if err := dg.Run(ctx, handler); err != nil && err != context.Canceled {
-				log.Printf("discord gateway: %v", err)
-			}
-		}()
+		starters = append(starters, gwStarter{"discord", gateway.NewDiscord(cfg.DiscordToken)})
 	}
 	if cfg.HTTPPort != "" {
-		go func() {
-			hg := gateway.NewHTTP(cfg.HTTPPort)
-			if err := hg.Run(ctx, handler); err != nil && err != context.Canceled {
-				log.Printf("http gateway: %v", err)
-			}
-		}()
+		starters = append(starters, gwStarter{"http", gateway.NewHTTP(cfg.HTTPPort)})
 	}
 	if cfg.SignalCliURL != "" && cfg.SignalNumber != "" {
+		starters = append(starters, gwStarter{"signal", gateway.NewSignal(cfg.SignalCliURL, cfg.SignalNumber)})
+	}
+	for _, s := range starters {
+		gw, name := s.gw, s.name
 		go func() {
-			sg := gateway.NewSignal(cfg.SignalCliURL, cfg.SignalNumber)
-			if err := sg.Run(ctx, handler); err != nil && err != context.Canceled {
-				log.Printf("signal gateway: %v", err)
+			if err := gw.Run(ctx, handler); err != nil && err != context.Canceled {
+				log.Printf("[%s] %v", name, err)
 			}
 		}()
 	}
