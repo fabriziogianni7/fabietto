@@ -22,6 +22,7 @@ import (
 	"custom-agent/sessionqueue"
 	"custom-agent/tools"
 	"custom-agent/wallet"
+	"custom-agent/x402client"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
@@ -41,9 +42,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
-	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), or spawn parallel sub-agents (spawn_subagents) when a task can be parallelized."
+	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), spawn parallel sub-agents (spawn_subagents), or http_request for HTTP APIs. When a task can be parallelized, use spawn_subagents."
 	if cfg.WalletEnabled() {
-		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted."
+		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
 	}
 	toolInstruction += "\n"
 
@@ -110,6 +111,19 @@ func main() {
 		sgn, err := signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
 		if err != nil {
 			log.Fatalf("wallet signer: %v", err)
+		}
+		// Create x402 client from private key before unsetting env (env backend only)
+		var x402Client *x402client.Client
+		if cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env" {
+			if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
+				x402Client, err = x402client.New(pk)
+				if err != nil {
+					log.Printf("[x402] signer init failed (http_request will use plain client): %v", err)
+				} else {
+					toolSet.SetX402Client(x402Client)
+					log.Printf("[x402] buyer enabled for http_request")
+				}
+			}
 		}
 		signer.UnsetEnvKey(cfg.WalletPrivateKeyEnv)
 		policyCfg := policy.DefaultConfig()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,22 +14,25 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"custom-agent/memory"
 	"custom-agent/reminders"
+	"custom-agent/x402client"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
-	"read_file":   true,
-	"web_search":  true,
-	"read_memory": true,
+	"read_file":    true,
+	"web_search":   true,
+	"read_memory":  true,
+	"http_request": true,
 }
 
 // WalletService is the interface for policy-gated wallet operations. Optional.
@@ -50,6 +54,7 @@ type Tools struct {
 	MemoryStore       *memory.Store
 	ReminderStore     *reminders.Store
 	Wallet            WalletService // optional; when set, wallet tools are available
+	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -69,6 +74,11 @@ func NewToolsWithReminderStore(braveSearchAPIKey string, memoryStore *memory.Sto
 // SetWallet sets the optional wallet service. Call after construction when wallet is enabled.
 func (t *Tools) SetWallet(w WalletService) {
 	t.Wallet = w
+}
+
+// SetX402Client sets the optional x402-aware HTTP client. Call when wallet is enabled for paid API support.
+func (t *Tools) SetX402Client(c *x402client.Client) {
+	t.X402Client = c
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -291,6 +301,23 @@ func Definitions() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
+				Name:        "http_request",
+				Description: "Make an HTTP request to a URL. Supports GET, POST, etc. When x402 is configured, automatically pays for 402-protected APIs. Use for fetching data from APIs, including paid x402 endpoints. Returns status, headers, and body (truncated if large).",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"url":     {Type: jsonschema.String, Description: "Full URL to request (e.g. https://api.example.com/data)"},
+						"method":  {Type: jsonschema.String, Description: "HTTP method (default: GET). Use GET, POST, PUT, etc."},
+						"headers": {Type: jsonschema.Object, Description: "Optional headers as key-value object (e.g. {\"Accept\": \"application/json\"})"},
+						"body":    {Type: jsonschema.String, Description: "Optional request body for POST/PUT (omit for GET)"},
+					},
+					Required: []string{"url"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
 				Name:        "wallet_get_balance",
 				Description: "Get the native token (ETH) balance of the wallet in wei. Use when the user asks about balance or funds. Omit chain_id for default chain.",
 				Parameters: jsonschema.Definition{
@@ -397,6 +424,8 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.listReminders(strArgs)
 	case "delete_reminder":
 		return t.deleteReminder(strArgs)
+	case "http_request":
+		return t.httpRequest(strArgs, args)
 	case "wallet_get_balance":
 		return t.walletGetBalance(strArgs, args)
 	case "wallet_execute_transfer":
@@ -712,6 +741,116 @@ func (t *Tools) deleteReminder(args map[string]string) (string, error) {
 		return "Error: " + err.Error(), nil
 	}
 	return "Reminder deleted.", nil
+}
+
+const (
+	httpRequestMaxBody   = 64 * 1024 // 64KB
+	httpRequestTimeout  = 30 * time.Second
+	httpRequestRedactHd = "authorization,cookie,x-api-key,x-auth-token"
+)
+
+func (t *Tools) httpRequest(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	rawURL := strings.TrimSpace(args["url"])
+	if rawURL == "" {
+		return "Error: url is required.", nil
+	}
+	if _, err := url.Parse(rawURL); err != nil {
+		return "Error: invalid url: " + err.Error(), nil
+	}
+	method := strings.TrimSpace(strings.ToUpper(args["method"]))
+	if method == "" {
+		method = "GET"
+	}
+	bodyStr := args["body"]
+
+	var body io.Reader
+	if bodyStr != "" && (method == "POST" || method == "PUT" || method == "PATCH") {
+		body = strings.NewReader(bodyStr)
+	}
+
+	req, err := http.NewRequest(method, rawURL, body)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	req.Header.Set("User-Agent", "custom-agent/1.0")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	// Optional headers from args
+	if rawArgs != nil {
+		if h, ok := rawArgs["headers"].(map[string]interface{}); ok {
+			for k, v := range h {
+				if s, ok := v.(string); ok && k != "" {
+					req.Header.Set(k, s)
+				}
+			}
+		}
+	}
+
+	client := http.DefaultClient
+	if t.X402Client != nil {
+		client = t.X402Client.Client
+	}
+	client = &http.Client{
+		Transport: client.Transport,
+		Timeout:   httpRequestTimeout,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), httpRequestTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "Error: request failed: " + err.Error(), nil
+	}
+	defer resp.Body.Close()
+
+	// Cap body read
+	limited := io.LimitReader(resp.Body, httpRequestMaxBody+1)
+	respBody, err := io.ReadAll(limited)
+	if err != nil {
+		return "Error: failed to read response: " + err.Error(), nil
+	}
+
+	truncated := len(respBody) > httpRequestMaxBody
+	if truncated {
+		respBody = respBody[:httpRequestMaxBody]
+	}
+
+	// Redact sensitive headers
+	redactSet := make(map[string]bool)
+	for _, h := range strings.Split(strings.ToLower(httpRequestRedactHd), ",") {
+		redactSet[strings.TrimSpace(h)] = true
+	}
+	var safeHeaders []string
+	for k, v := range resp.Header {
+		lower := strings.ToLower(k)
+		if redactSet[lower] {
+			safeHeaders = append(safeHeaders, k+": [redacted]")
+		} else if len(v) > 0 {
+			safeHeaders = append(safeHeaders, k+": "+v[0])
+		}
+	}
+
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("Status: %d %s\n", resp.StatusCode, resp.Status))
+	if len(safeHeaders) > 0 {
+		out.WriteString("Headers:\n")
+		for _, h := range safeHeaders {
+			out.WriteString("  " + h + "\n")
+		}
+	}
+	out.WriteString("Body:\n")
+	out.WriteString(string(respBody))
+	if truncated {
+		out.WriteString("\n\n[truncated]")
+	}
+	if resp.StatusCode == http.StatusPaymentRequired && t.X402Client == nil {
+		out.WriteString("\n\nNote: 402 Payment Required. Configure wallet (EVM_RPC_URL, WALLET_PRIVATE_KEY) for x402 to pay automatically.")
+	}
+	return out.String(), nil
 }
 
 func runCommand(command string) (string, error) {

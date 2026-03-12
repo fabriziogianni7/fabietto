@@ -92,6 +92,7 @@ The bot can use tools when the LLM decides they're helpful:
 | `list_reminders` | List scheduled reminders |
 | `delete_reminder` | Delete a reminder by ID |
 | `spawn_subagents` | Run parallel stateless sub-agents for research or multi-step tasks (read-only tools) |
+| `http_request` | Make HTTP requests to URLs. When wallet is enabled, automatically pays for x402-protected APIs (402 Payment Required). |
 | `wallet_get_balance` | Get native token balance (when wallet enabled) |
 | `wallet_execute_transfer` | Send native token (when wallet enabled) |
 | `wallet_execute_contract_call` | Call a smart contract (when wallet enabled) |
@@ -176,6 +177,8 @@ Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or sig
 
 See `WALLET.md` for tool usage. Transactions above the spend limit trigger a notification; the user must reply `approve: tx_<id>` to execute.
 
+**x402 buyer:** When the wallet is enabled (env backend), the `http_request` tool can automatically pay for APIs that return 402 Payment Required. The agent uses the same wallet to sign x402 payment payloads.
+
 ---
 
 ## Contributing
@@ -225,6 +228,7 @@ custom-agent/
 │   └── queue.go           # per-session request queue
 ├── sessionlock/
 │   └── sessionlock.go     # session locking
+├── x402client/            # x402 buyer HTTP client (payment handling)
 ├── wallet/
 │   ├── service.go         # wallet service (balance, transfer, contract call)
 │   ├── notifier.go        # approval notifications via SenderRegistry
