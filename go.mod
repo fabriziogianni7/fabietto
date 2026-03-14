@@ -3,6 +3,7 @@ module custom-agent
 go 1.24.0
 
 require (
+	github.com/1clawAI/1claw-go-sdk v0.0.0-20260313175027-5e1a5573d99c
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/coinbase/x402/go v0.0.0-20260312133034-8931cb3b337b
 	github.com/ethereum/go-ethereum v1.17.1

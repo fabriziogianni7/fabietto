@@ -5,8 +5,8 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,6 +15,7 @@ import (
 	"custom-agent/agent"
 	"custom-agent/config"
 	"custom-agent/conversation"
+	"custom-agent/oneclaw"
 	"custom-agent/embedding"
 	"custom-agent/gateway"
 	"custom-agent/memory"
@@ -22,19 +23,22 @@ import (
 	"custom-agent/sessionqueue"
 	"custom-agent/tools"
 	"custom-agent/wallet"
-	"custom-agent/x402client"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
 	"custom-agent/wallet/policy"
 	"custom-agent/wallet/signer"
+	"custom-agent/x402client"
 
 	"github.com/sashabaranov/go-openai"
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
+	cfg := config.LoadFromEnv()
+	if err := oneclaw.ResolveConfig(context.Background(), cfg); err != nil {
+		log.Fatalf("1claw resolve: %v", err)
+	}
+	if err := config.Validate(cfg); err != nil {
 		log.Fatalf("config: %v", err)
 	}
 
