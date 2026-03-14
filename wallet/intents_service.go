@@ -151,13 +151,8 @@ func (s *IntentsService) executeAction(ctx context.Context, chainID int64, actio
 		return "Error: " + err.Error(), nil
 	}
 
-	dec := s.policy.Evaluate(&account.Action{
-		Type:     action.Type,
-		To:       action.To,
-		Value:    action.Value,
-		Data:     action.Data,
-		GasLimit: 21000,
-	})
+	accAction := toAccountAction(action)
+	dec := s.policy.Evaluate(accAction)
 	switch dec {
 	case policy.Deny:
 		return "Error: transaction denied by policy.", nil
@@ -166,7 +161,7 @@ func (s *IntentsService) executeAction(ctx context.Context, chainID int64, actio
 			return "Error: approval required but approval store not configured.", nil
 		}
 		p := &approval.Pending{
-			Action:   toAccountAction(action),
+			Action:   accAction,
 			ChainID:  cid,
 			Summary:  intentsActionSummary(action),
 			Platform: platform,
