@@ -13,6 +13,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
+- [1claw integration](#1claw-integration)
 - [Wallet](#wallet)
 - [Contributing](#contributing)
 - [Project structure](#project-structure)
@@ -93,6 +94,7 @@ The bot can use tools when the LLM decides they're helpful:
 | `delete_reminder` | Delete a reminder by ID |
 | `spawn_subagents` | Run parallel stateless sub-agents for research or multi-step tasks (read-only tools) |
 | `http_request` | Make HTTP requests to URLs. When wallet is enabled, automatically pays for x402-protected APIs (402 Payment Required). |
+| `get_secret` | Read a secret from the 1claw vault by path (when 1claw configured and `1CLAW_SECRET_PATH_PREFIX` set) |
 | `wallet_get_balance` | Get native token balance (when wallet enabled) |
 | `wallet_execute_transfer` | Send native token (when wallet enabled) |
 | `wallet_execute_contract_call` | Call a smart contract (when wallet enabled) |
@@ -163,14 +165,45 @@ Embeddings are **lazy** (only used when needed) and **cached** (stored with memo
 
 ---
 
+## 1claw Integration
+
+Optional [1claw](https://1claw.xyz) integration for secret management. When configured:
+
+- **Startup resolution**: Missing config values (e.g. `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) are filled from the vault. Env vars always take precedence.
+- **get_secret tool**: When `1CLAW_SECRET_PATH_PREFIX` is set, the agent can read secrets by path. Paths must start with the prefix (e.g. `agent/`).
+- **Wallet signer**: Use `WALLET_SIGNER_BACKEND=1claw` to fetch the signing key from the vault at init.
+- **Intents backend**: Use `WALLET_BACKEND=intents` for keys in HSM; the agent submits intents via the 1claw Transactions API.
+
+| Env var | Description |
+|---------|-------------|
+| `1CLAW_BASE_URL` | API base URL (optional, default: 1claw production) |
+| `1CLAW_VAULT_ID` | Vault ID for secrets |
+| `1CLAW_API_KEY` | API key (ocv_...) |
+| `1CLAW_AGENT_ID` | Optional; for agent token flow |
+| `1CLAW_SECRET_PATH_PREFIX` | Path prefix for get_secret (e.g. `agent/`). When set with 1claw, enables the tool. |
+
+**Fallback:** If 1claw is not configured, the app works as before—env vars only. No API calls are made.
+
+---
+
 ## Wallet
 
-Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or signer backend) are set, wallet tools are enabled.
+Optional EVM wallet support. When `EVM_RPC_URL` and a signer are set, wallet tools are enabled.
+
+**Wallet backends:**
+
+| Backend | Env vars | Description |
+|---------|----------|-------------|
+| `env` (default) | `WALLET_PRIVATE_KEY` | Key from environment |
+| `1claw` | `1CLAW_VAULT_ID`, `1CLAW_API_KEY` | Key fetched from 1claw vault at init |
+| `intents` | `1CLAW_AGENT_ID`, `1CLAW_AGENT_WALLET_ADDRESS` | Keys in HSM; agent submits intents via 1claw API |
 
 | Env var | Description |
 |---------|-------------|
 | `EVM_RPC_URL` | RPC endpoint (e.g. Alchemy, Infura) |
-| `WALLET_PRIVATE_KEY` | 0x-prefixed private key (or use `WALLET_SIGNER_BACKEND` for KMS/HSM) |
+| `WALLET_PRIVATE_KEY` | 0x-prefixed private key (env backend) |
+| `WALLET_SIGNER_BACKEND` | `env` \| `1claw` (default: env) |
+| `WALLET_BACKEND` | `env` \| `intents` (default: env) |
 | `CHAIN_ID` | Default chain (e.g. 1 for Ethereum) |
 | `WALLET_NATIVE_SPEND_LIMIT` | Wei string; transactions above this require user approval |
 | `WALLET_CHAINS` | JSON array for multichain: `[{"chain_id":1,"rpc_url":"...","explorer":"...","name":"Ethereum"}]` |
