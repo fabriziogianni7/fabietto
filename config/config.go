@@ -176,5 +176,9 @@ func (c *Config) WalletEnabled() bool {
 	if c.WalletSignerBackend == "env" {
 		return os.Getenv(c.WalletPrivateKeyEnv) != ""
 	}
+	// For 1claw backend, require API key and vault ID
+	if c.WalletSignerBackend == "1claw" {
+		return c.OneClawEnabled()
+	}
 	return true
 }

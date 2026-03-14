@@ -4,6 +4,9 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"custom-agent/config"
+	"custom-agent/oneclaw"
 )
 
 func TestLoadConfig_Without1Claw(t *testing.T) {
@@ -18,9 +21,12 @@ func TestLoadConfig_Without1Claw(t *testing.T) {
 		os.Unsetenv("TELEGRAM_BOT_TOKEN")
 	}()
 
-	cfg, err := loadConfig(context.Background())
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
+	cfg := config.LoadFromEnv()
+	if err := oneclaw.ResolveConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	if cfg.GroqAPIKey != "gk" || cfg.TelegramBotToken != "tg" {
 		t.Errorf("config not loaded: Groq=%q Telegram=%q", cfg.GroqAPIKey, cfg.TelegramBotToken)
@@ -28,9 +34,6 @@ func TestLoadConfig_Without1Claw(t *testing.T) {
 }
 
 func TestLoadConfig_With1ClawEnvButNoResolver(t *testing.T) {
-	// When 1claw env is set but resolver would fail (e.g. invalid API key),
-	// we still want to test that we attempt resolution. For unit test we
-	// avoid network by not setting 1claw env - so resolver is nil.
 	os.Setenv("GROQ_API_KEY", "gk")
 	os.Setenv("BRAVE_SEARCH_API_KEY", "bk")
 	os.Setenv("TELEGRAM_BOT_TOKEN", "tg")
@@ -42,12 +45,14 @@ func TestLoadConfig_With1ClawEnvButNoResolver(t *testing.T) {
 		os.Unsetenv("TELEGRAM_BOT_TOKEN")
 	}()
 
-	cfg, err := loadConfig(context.Background())
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
+	cfg := config.LoadFromEnv()
+	if err := oneclaw.ResolveConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
 	}
-	if !cfg.OneClawEnabled() {
-		// Expected when 1claw env not set
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
-	_ = cfg
+	if cfg.OneClawEnabled() {
+		t.Error("expected OneClawEnabled false when 1claw env not set")
+	}
 }

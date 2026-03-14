@@ -112,7 +112,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("wallet chain registry: %v", err)
 		}
-		sgn, err := signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
+		var sgn signer.Signer
+		if cfg.WalletSignerBackend == "1claw" {
+			oneClawClient, err := oneclaw.NewClient(cfg)
+			if err != nil {
+				log.Fatalf("1claw client: %v", err)
+			}
+			sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{
+				"vault_id": cfg.OneClawVaultID,
+				"key_path": oneclaw.PathWalletPrivateKey,
+			}, signer.WithOneClawClient(oneClawClient))
+		} else {
+			sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
+		}
 		if err != nil {
 			log.Fatalf("wallet signer: %v", err)
 		}
