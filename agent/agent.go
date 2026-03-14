@@ -176,7 +176,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Content: text,
 	})
 
-	toolDefs := tools.Definitions()
+	toolDefs := a.tools.ToolDefinitions()
 	mustExecuteWallet := a.tools.Wallet != nil && wantsWalletSend(text)
 	walletToolUsed := false
 

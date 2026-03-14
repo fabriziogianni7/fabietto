@@ -30,6 +30,7 @@ import (
 	"custom-agent/wallet/signer"
 	"custom-agent/x402client"
 
+	sdk "github.com/1clawAI/1claw-go-sdk"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -49,6 +50,9 @@ func main() {
 	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), spawn parallel sub-agents (spawn_subagents), or http_request for HTTP APIs. When a task can be parallelized, use spawn_subagents."
 	if cfg.WalletEnabled() {
 		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
+	}
+	if cfg.OneClawEnabled() && cfg.OneClawSecretPathPrefix != "" {
+		toolInstruction += " When 1claw vault is configured, you can use get_secret to read secrets by path (paths must start with " + cfg.OneClawSecretPathPrefix + ")."
 	}
 	toolInstruction += "\n"
 
@@ -79,6 +83,14 @@ func main() {
 	reminderStore := reminders.NewStore()
 
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
+	if cfg.OneClawEnabled() && cfg.OneClawSecretPathPrefix != "" {
+		oneClawClient, err := oneclaw.NewClient(cfg)
+		if err != nil {
+			log.Fatalf("1claw client for secrets: %v", err)
+		}
+		toolSet.SetSecrets(&sdkSecretGetter{client: oneClawClient}, cfg.OneClawVaultID, cfg.OneClawSecretPathPrefix)
+		log.Printf("[tools] get_secret enabled (path prefix: %s)", cfg.OneClawSecretPathPrefix)
+	}
 	senderRegistry := gateway.NewSenderRegistry()
 
 	// Build gateways and register Senders (for reminders and wallet approval notifications)
@@ -230,4 +242,17 @@ func main() {
 	<-sig
 	log.Println("shutting down...")
 	cancel()
+}
+
+// sdkSecretGetter adapts *sdk.Client to tools.SecretGetter.
+type sdkSecretGetter struct {
+	client *sdk.Client
+}
+
+func (s *sdkSecretGetter) Get(ctx context.Context, vaultID, path string) (string, error) {
+	secret, err := s.client.Secrets.Get(ctx, vaultID, path)
+	if err != nil {
+		return "", err
+	}
+	return secret.Value, nil
 }

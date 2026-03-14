@@ -24,8 +24,13 @@ import (
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
+// SecretGetter fetches a secret by path. Used for get_secret tool.
+type SecretGetter interface {
+	Get(ctx context.Context, vaultID, path string) (string, error)
+}
+
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "get_secret"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
@@ -55,6 +60,11 @@ type Tools struct {
 	ReminderStore     *reminders.Store
 	Wallet            WalletService // optional; when set, wallet tools are available
 	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
+
+	// Optional 1claw secret access for get_secret tool. When all set, get_secret is enabled.
+	secretGetter     SecretGetter
+	secretVaultID    string
+	secretPathPrefix string
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -79,6 +89,19 @@ func (t *Tools) SetWallet(w WalletService) {
 // SetX402Client sets the optional x402-aware HTTP client. Call when wallet is enabled for paid API support.
 func (t *Tools) SetX402Client(c *x402client.Client) {
 	t.X402Client = c
+}
+
+// SetSecrets enables the get_secret tool. Paths must start with prefix (e.g. "agent/").
+// Call when 1claw is configured and 1CLAW_SECRET_PATH_PREFIX is set.
+func (t *Tools) SetSecrets(getter SecretGetter, vaultID, pathPrefix string) {
+	t.secretGetter = getter
+	t.secretVaultID = vaultID
+	t.secretPathPrefix = pathPrefix
+}
+
+// SecretsEnabled returns true if get_secret tool is available.
+func (t *Tools) SecretsEnabled() bool {
+	return t.secretGetter != nil && t.secretVaultID != "" && t.secretPathPrefix != ""
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -153,8 +176,26 @@ func extractJSON(s string, start int) (string, int) {
 	return "", -1
 }
 
-// Definitions returns the tool definitions for the LLM.
-func Definitions() []openai.Tool {
+// getSecretToolDef returns the get_secret tool definition.
+func getSecretToolDef() openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "get_secret",
+			Description: "Read a secret from the vault. Path must start with the configured prefix (e.g. agent/). Use for API keys, tokens, or other secrets stored in 1claw. Returns the secret value or a redacted error.",
+			Parameters: jsonschema.Definition{
+				Type: jsonschema.Object,
+				Properties: map[string]jsonschema.Definition{
+					"path": {Type: jsonschema.String, Description: "Vault path to the secret (must start with configured prefix, e.g. agent/api_key)"},
+				},
+				Required: []string{"path"},
+			},
+		},
+	}
+}
+
+// baseDefinitions returns tool definitions without conditional tools (e.g. get_secret).
+func baseDefinitions() []openai.Tool {
 	return []openai.Tool{
 		{
 			Type: openai.ToolTypeFunction,
@@ -378,6 +419,21 @@ func Definitions() []openai.Tool {
 	}
 }
 
+// Definitions returns the tool definitions for the LLM (base tools only).
+// Use Tools.Definitions() to get definitions including conditional tools (get_secret when enabled).
+func Definitions() []openai.Tool {
+	return baseDefinitions()
+}
+
+// Definitions returns tool definitions for this Tools instance, including get_secret when secrets are enabled.
+func (t *Tools) ToolDefinitions() []openai.Tool {
+	defs := baseDefinitions()
+	if t.SecretsEnabled() {
+		defs = append(defs, getSecretToolDef())
+	}
+	return defs
+}
+
 // IsAllowedForSubagent returns true if the tool can be used by stateless sub-agents.
 func IsAllowedForSubagent(name string) bool {
 	return ReadOnlyToolNames[name]
@@ -434,6 +490,8 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
 		return t.walletListTransactions(strArgs, args)
+	case "get_secret":
+		return t.getSecret(strArgs)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -530,6 +588,24 @@ func (t *Tools) walletListTransactions(args map[string]string, rawArgs map[strin
 		}
 	}
 	return t.Wallet.ListTransactions(chainID, limit)
+}
+
+func (t *Tools) getSecret(args map[string]string) (string, error) {
+	if !t.SecretsEnabled() {
+		return "Error: get_secret not configured. Set 1CLAW_SECRET_PATH_PREFIX with 1claw to enable.", nil
+	}
+	path := strings.TrimSpace(args["path"])
+	if path == "" {
+		return "Error: path is required.", nil
+	}
+	if !strings.HasPrefix(path, t.secretPathPrefix) {
+		return "Error: path must start with " + t.secretPathPrefix, nil
+	}
+	val, err := t.secretGetter.Get(context.Background(), t.secretVaultID, path)
+	if err != nil {
+		return "Error: secret not found or access denied.", nil
+	}
+	return val, nil
 }
 
 // InjectWalletArgs adds platform, user_id, chat_id to args for wallet tools.

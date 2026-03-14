@@ -60,10 +60,11 @@ type Config struct {
 	WalletDefaultChainID int64  // default chain when chain_id omitted (default: from first chain or CHAIN_ID)
 
 	// 1claw (optional). When set, secrets can be resolved from vault at startup.
-	OneClawBaseURL  string // e.g. "https://api.1claw.xyz"
-	OneClawVaultID  string // vault ID to fetch secrets from
-	OneClawAPIKey   string // ocv_... API key
-	OneClawAgentID  string // optional; for agent token flow
+	OneClawBaseURL         string // e.g. "https://api.1claw.xyz"
+	OneClawVaultID         string // vault ID to fetch secrets from
+	OneClawAPIKey          string // ocv_... API key
+	OneClawAgentID         string // optional; for agent token flow
+	OneClawSecretPathPrefix string // e.g. "agent/"; when set with 1claw, get_secret tool is enabled
 
 	// Wallet backend: "env" | "1claw" | "intents". Default: env.
 	WalletBackend string // when "intents", use 1claw Intents API (keys in HSM)
@@ -98,11 +99,12 @@ func LoadFromEnv() *Config {
 		WalletChainsJSON:       strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
 		WalletDefaultChainID:   parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
 
-		OneClawBaseURL:  strings.TrimSpace(os.Getenv("1CLAW_BASE_URL")),
-		OneClawVaultID:  strings.TrimSpace(os.Getenv("1CLAW_VAULT_ID")),
-		OneClawAPIKey:   strings.TrimSpace(os.Getenv("1CLAW_API_KEY")),
-		OneClawAgentID:  strings.TrimSpace(os.Getenv("1CLAW_AGENT_ID")),
-		WalletBackend:   strings.TrimSpace(os.Getenv("WALLET_BACKEND")),
+		OneClawBaseURL:         strings.TrimSpace(os.Getenv("1CLAW_BASE_URL")),
+		OneClawVaultID:         strings.TrimSpace(os.Getenv("1CLAW_VAULT_ID")),
+		OneClawAPIKey:          strings.TrimSpace(os.Getenv("1CLAW_API_KEY")),
+		OneClawAgentID:         strings.TrimSpace(os.Getenv("1CLAW_AGENT_ID")),
+		OneClawSecretPathPrefix: strings.TrimSpace(os.Getenv("1CLAW_SECRET_PATH_PREFIX")),
+		WalletBackend:          strings.TrimSpace(os.Getenv("WALLET_BACKEND")),
 		OneClawAgentWalletAddress: strings.TrimSpace(os.Getenv("1CLAW_AGENT_WALLET_ADDRESS")),
 	}
 }
