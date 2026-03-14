@@ -64,6 +64,11 @@ type Config struct {
 	OneClawVaultID  string // vault ID to fetch secrets from
 	OneClawAPIKey   string // ocv_... API key
 	OneClawAgentID  string // optional; for agent token flow
+
+	// Wallet backend: "env" | "1claw" | "intents". Default: env.
+	WalletBackend string // when "intents", use 1claw Intents API (keys in HSM)
+	// For intents backend: wallet address (required; key is in HSM so we can't derive it)
+	OneClawAgentWalletAddress string // 0x... address of the agent's signing key
 }
 
 // LoadFromEnv reads environment variables from .env (if present) into Config.
@@ -93,10 +98,12 @@ func LoadFromEnv() *Config {
 		WalletChainsJSON:       strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
 		WalletDefaultChainID:   parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
 
-		OneClawBaseURL: strings.TrimSpace(os.Getenv("1CLAW_BASE_URL")),
-		OneClawVaultID: strings.TrimSpace(os.Getenv("1CLAW_VAULT_ID")),
-		OneClawAPIKey:  strings.TrimSpace(os.Getenv("1CLAW_API_KEY")),
-		OneClawAgentID: strings.TrimSpace(os.Getenv("1CLAW_AGENT_ID")),
+		OneClawBaseURL:  strings.TrimSpace(os.Getenv("1CLAW_BASE_URL")),
+		OneClawVaultID:  strings.TrimSpace(os.Getenv("1CLAW_VAULT_ID")),
+		OneClawAPIKey:   strings.TrimSpace(os.Getenv("1CLAW_API_KEY")),
+		OneClawAgentID:  strings.TrimSpace(os.Getenv("1CLAW_AGENT_ID")),
+		WalletBackend:   strings.TrimSpace(os.Getenv("WALLET_BACKEND")),
+		OneClawAgentWalletAddress: strings.TrimSpace(os.Getenv("1CLAW_AGENT_WALLET_ADDRESS")),
 	}
 }
 
@@ -165,6 +172,10 @@ func (c *Config) validate() error {
 func (c *Config) WalletEnabled() bool {
 	if c.EVM_RPC_URL == "" {
 		return false
+	}
+	// For intents backend (WALLET_BACKEND=intents), require agent ID, API key, and wallet address
+	if c.WalletBackend == "intents" {
+		return c.OneClawAgentID != "" && c.OneClawAPIKey != "" && c.OneClawAgentWalletAddress != ""
 	}
 	if c.WalletSignerBackend == "" {
 		c.WalletSignerBackend = "env"

@@ -106,60 +106,86 @@ func main() {
 		starters = append(starters, gwStarter{"signal", sg})
 	}
 
-	// Wallet: optional. When enabled, create chain registry, signer, policy, approval, history, service.
+	// Wallet: optional. When enabled, create chain registry, policy, approval, history, service.
 	if cfg.WalletEnabled() {
 		chainRegistry, err := chains.BuildFromConfig(cfg.WalletChainsJSON, cfg.EVM_RPC_URL, cfg.ChainID, cfg.WalletDefaultChainID)
 		if err != nil {
 			log.Fatalf("wallet chain registry: %v", err)
 		}
-		var sgn signer.Signer
-		if cfg.WalletSignerBackend == "1claw" {
-			oneClawClient, err := oneclaw.NewClient(cfg)
+		if cfg.WalletBackend == "intents" {
+			// Intents backend: keys in HSM, agent submits intents
+			oneClawClient, err := oneclaw.NewClientForIntents(cfg)
 			if err != nil {
 				log.Fatalf("1claw client: %v", err)
 			}
-			sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{
-				"vault_id": cfg.OneClawVaultID,
-				"key_path": oneclaw.PathWalletPrivateKey,
-			}, signer.WithOneClawClient(oneClawClient))
-		} else {
-			sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
-		}
-		if err != nil {
-			log.Fatalf("wallet signer: %v", err)
-		}
-		// Create x402 client from private key before unsetting env (env backend only)
-		var x402Client *x402client.Client
-		if cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env" {
-			if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
-				x402Client, err = x402client.New(pk)
-				if err != nil {
-					log.Printf("[x402] signer init failed (http_request will use plain client): %v", err)
-				} else {
-					toolSet.SetX402Client(x402Client)
-					log.Printf("[x402] buyer enabled for http_request")
+			policyCfg := policy.DefaultConfig()
+			if cfg.WalletNativeSpendLimit != "" {
+				if n, ok := new(big.Int).SetString(cfg.WalletNativeSpendLimit, 10); ok {
+					policyCfg.NativeSpendLimitWei = n
 				}
 			}
-		}
-		signer.UnsetEnvKey(cfg.WalletPrivateKeyEnv)
-		policyCfg := policy.DefaultConfig()
-		if cfg.WalletNativeSpendLimit != "" {
-			if n, ok := new(big.Int).SetString(cfg.WalletNativeSpendLimit, 10); ok {
-				policyCfg.NativeSpendLimitWei = n
+			policyEngine := policy.NewEngine(policyCfg)
+			approvalDir := cfg.WalletApprovalDir
+			if approvalDir == "" {
+				approvalDir = "wallet-approvals"
 			}
+			approvalStore := approval.NewStore(approvalDir, 15*time.Minute)
+			notifier := wallet.NewSenderNotifier(senderRegistry)
+			historyDir := filepath.Join(filepath.Dir(approvalDir), "wallet-history")
+			historyStore := history.NewStore(historyDir)
+			intentsSvc := wallet.NewIntentsService(oneClawClient, cfg.OneClawAgentID, cfg.OneClawAgentWalletAddress, chainRegistry, policyEngine, approvalStore, notifier, historyStore)
+			toolSet.SetWallet(intentsSvc)
+			log.Printf("[wallet] intents backend enabled, address %s, default chain %d", intentsSvc.WalletAddress(), intentsSvc.DefaultChainID())
+		} else {
+			var sgn signer.Signer
+			if cfg.WalletSignerBackend == "1claw" {
+				oneClawClient, err := oneclaw.NewClient(cfg)
+				if err != nil {
+					log.Fatalf("1claw client: %v", err)
+				}
+				sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{
+					"vault_id": cfg.OneClawVaultID,
+					"key_path": oneclaw.PathWalletPrivateKey,
+				}, signer.WithOneClawClient(oneClawClient))
+			} else {
+				sgn, err = signer.NewFromBackend(cfg.WalletSignerBackend, map[string]string{"env_key": cfg.WalletPrivateKeyEnv})
+			}
+			if err != nil {
+				log.Fatalf("wallet signer: %v", err)
+			}
+			// Create x402 client from private key before unsetting env (env backend only)
+			var x402Client *x402client.Client
+			if cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env" {
+				if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
+					x402Client, err = x402client.New(pk)
+					if err != nil {
+						log.Printf("[x402] signer init failed (http_request will use plain client): %v", err)
+					} else {
+						toolSet.SetX402Client(x402Client)
+						log.Printf("[x402] buyer enabled for http_request")
+					}
+				}
+			}
+			signer.UnsetEnvKey(cfg.WalletPrivateKeyEnv)
+			policyCfg := policy.DefaultConfig()
+			if cfg.WalletNativeSpendLimit != "" {
+				if n, ok := new(big.Int).SetString(cfg.WalletNativeSpendLimit, 10); ok {
+					policyCfg.NativeSpendLimitWei = n
+				}
+			}
+			policyEngine := policy.NewEngine(policyCfg)
+			approvalDir := cfg.WalletApprovalDir
+			if approvalDir == "" {
+				approvalDir = "wallet-approvals"
+			}
+			approvalStore := approval.NewStore(approvalDir, 15*time.Minute)
+			notifier := wallet.NewSenderNotifier(senderRegistry)
+			historyDir := filepath.Join(filepath.Dir(approvalDir), "wallet-history")
+			historyStore := history.NewStore(historyDir)
+			walletSvc := wallet.NewService(chainRegistry, sgn, policyEngine, approvalStore, notifier, historyStore)
+			toolSet.SetWallet(walletSvc)
+			log.Printf("[wallet] enabled, address %s, default chain %d, backend=%s", walletSvc.WalletAddress(), walletSvc.DefaultChainID(), cfg.WalletSignerBackend)
 		}
-		policyEngine := policy.NewEngine(policyCfg)
-		approvalDir := cfg.WalletApprovalDir
-		if approvalDir == "" {
-			approvalDir = "wallet-approvals"
-		}
-		approvalStore := approval.NewStore(approvalDir, 15*time.Minute)
-		notifier := wallet.NewSenderNotifier(senderRegistry)
-		historyDir := filepath.Join(filepath.Dir(approvalDir), "wallet-history")
-		historyStore := history.NewStore(historyDir)
-		walletSvc := wallet.NewService(chainRegistry, sgn, policyEngine, approvalStore, notifier, historyStore)
-		toolSet.SetWallet(walletSvc)
-		log.Printf("[wallet] enabled, address %s, default chain %d, backend=%s", walletSvc.WalletAddress(), walletSvc.DefaultChainID(), cfg.WalletSignerBackend)
 	}
 
 	// Build system prompt: personality + tools, then append WALLET.md when wallet is enabled

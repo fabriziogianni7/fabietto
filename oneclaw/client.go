@@ -9,11 +9,24 @@ import (
 )
 
 // NewClient creates a 1claw SDK client from config.
-// Requires cfg.OneClawEnabled() to be true.
+// Requires cfg.OneClawEnabled() to be true (API key and vault ID).
 func NewClient(cfg *config.Config) (*sdk.Client, error) {
 	if !cfg.OneClawEnabled() {
 		return nil, errors.New("1claw: not configured (API key and vault ID required)")
 	}
+	return newClientFromConfig(cfg)
+}
+
+// NewClientForIntents creates a 1claw SDK client for the Intents API.
+// Requires API key and agent ID (vault ID not needed for transactions).
+func NewClientForIntents(cfg *config.Config) (*sdk.Client, error) {
+	if cfg.OneClawAPIKey == "" || cfg.OneClawAgentID == "" {
+		return nil, errors.New("1claw: intents requires 1CLAW_API_KEY and 1CLAW_AGENT_ID")
+	}
+	return newClientFromConfig(cfg)
+}
+
+func newClientFromConfig(cfg *config.Config) (*sdk.Client, error) {
 	opts := []sdk.Option{
 		sdk.WithAPIKey(cfg.OneClawAPIKey),
 	}

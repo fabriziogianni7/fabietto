@@ -2,6 +2,8 @@ module custom-agent
 
 go 1.24.0
 
+replace github.com/1clawAI/1claw-go-sdk => ../1claw-go-sdk
+
 require (
 	github.com/1clawAI/1claw-go-sdk v0.0.0-20260313175027-5e1a5573d99c
 	github.com/bwmarrin/discordgo v0.29.0
