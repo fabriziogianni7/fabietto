@@ -58,6 +58,9 @@ type Config struct {
 	// Multichain: JSON array of {chain_id, rpc_url, explorer, name}. If empty, use EVM_RPC_URL+CHAIN_ID.
 	WalletChainsJSON     string // e.g. [{"chain_id":1,"rpc_url":"...","explorer":"https://etherscan.io","name":"Ethereum"}]
 	WalletDefaultChainID int64  // default chain when chain_id omitted (default: from first chain or CHAIN_ID)
+
+	// Skills: directory for user-installed skills (OpenClaw-style SKILL.md folders). Default: ./skills-data
+	SkillsDir string
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -86,6 +89,10 @@ func Load() (*Config, error) {
 		WalletApprovalDir:   strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
 		WalletChainsJSON:    strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
 		WalletDefaultChainID: parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
+		SkillsDir:           strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+	}
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = "./skills-data"
 	}
 
 	if err := cfg.validate(); err != nil {

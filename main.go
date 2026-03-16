@@ -23,6 +23,7 @@ import (
 	"custom-agent/tools"
 	"custom-agent/wallet"
 	"custom-agent/x402client"
+	"custom-agent/skills"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
@@ -43,6 +44,9 @@ func main() {
 		log.Fatalf("failed to load PERSONALITY.md: %v", err)
 	}
 	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), spawn parallel sub-agents (spawn_subagents), or http_request for HTTP APIs. When a task can be parallelized, use spawn_subagents."
+	if cfg.SkillsDir != "" {
+		toolInstruction += " When the user asks to add, create, or install a skill (even without saying newSkill), compose the SKILL.md content with YAML frontmatter and body, then use write_skill. The tool automatically runs security and feasibility checks before saving."
+	}
 	if cfg.WalletEnabled() {
 		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
 	}
@@ -75,6 +79,12 @@ func main() {
 	reminderStore := reminders.NewStore()
 
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
+	if cfg.SkillsDir != "" {
+		sm := skills.NewManager(cfg.SkillsDir)
+		toolSet.SetSkills(sm)
+		toolSet.SetLLMClient(llm)
+		log.Printf("[skills] enabled, dir=%s", cfg.SkillsDir)
+	}
 	senderRegistry := gateway.NewSenderRegistry()
 
 	// Build gateways and register Senders (for reminders and wallet approval notifications)
@@ -158,7 +168,7 @@ func main() {
 		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
 	}
 
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore)
+	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir)
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

@@ -14,6 +14,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
 - [Wallet](#wallet)
+- [Skills](#skills)
 - [Contributing](#contributing)
 - [Project structure](#project-structure)
 
@@ -49,7 +50,7 @@ Config is loaded from `.env` (if present) and validated at startup. At least one
 
 Message your bot on Telegram (or your configured gateway). It will respond using Groq's Llama 3.1 8B model. Conversation history is stored per user in `sessions/` (JSONL files), so the bot remembers context—e.g. "what did I say earlier?" works.
 
-**Commands:** Send `/new` to clear your session and start a fresh conversation.
+**Commands:** Send `/new` to clear your session. Send `newSkill` to add a new skill interactively.
 
 ---
 
@@ -97,6 +98,10 @@ The bot can use tools when the LLM decides they're helpful:
 | `wallet_execute_transfer` | Send native token (when wallet enabled) |
 | `wallet_execute_contract_call` | Call a smart contract (when wallet enabled) |
 | `wallet_list_transactions` | List recent agent-initiated transactions (when wallet enabled) |
+| `list_skills` | List available skills (name + description) |
+| `read_skill` | Read full skill content by name |
+| `read_skill_script` | Read a script file within a skill |
+| `write_skill` | Persist a new skill (after security/feasibility checks) |
 
 The agent loop runs until the LLM returns a final text response or hits the tool limit (10 rounds). Add or modify tools in `tools/tools.go`.
 
@@ -181,6 +186,24 @@ See `WALLET.md` for tool usage. Transactions above the spend limit trigger a not
 
 ---
 
+## Skills
+
+User-installed skills extend the agent with new capabilities. Each skill is a directory with `SKILL.md` (YAML frontmatter + Markdown instructions) and optional Python or shell scripts.
+
+| Env var | Description |
+|---------|-------------|
+| `SKILLS_DIR` | Skills root directory (default `./skills-data`). Separate from the `skills/` package source. |
+
+**Adding skills:**
+1. **Manually**: Create `skills-data/<name>/SKILL.md` (or `$SKILLS_DIR/<name>/SKILL.md`) with frontmatter and body.
+2. **Via chat**: Send `newSkill` or `/newSkill`, then paste your SKILL.md when prompted. The agent runs security and feasibility checks before saving.
+
+**Tools:** `list_skills`, `read_skill`, `read_skill_script` let the agent discover and use skills. Only short descriptions are injected into the system prompt; full content is fetched on demand.
+
+See `skills/README.md` for format and script language policy.
+
+---
+
 ## Contributing
 
 - **Run tests**: `go test ./...`
@@ -213,6 +236,11 @@ custom-agent/
 ├── tools/
 │   ├── tools.go           # tool definitions + executeTool
 │   └── approvals.go       # exec approval persistence
+├── skills/
+│   ├── manager.go         # skill discovery, parse, read, write
+│   ├── security.go       # LLM-based security check for new skills
+│   ├── feasibility.go    # LLM-based feasibility/clarity check
+│   └── README.md         # skill format and script policy
 ├── memory/
 │   └── memory.go          # long-term memory (save/read with embeddings)
 ├── embedding/
@@ -241,6 +269,7 @@ custom-agent/
 │   ├── abi/               # ABI parsing
 │   ├── provider/          # RPC provider
 │   └── redact/            # sensitive data redaction
+├── skills-data/           # user-installed skills (SKILL.md folders, default; separate from skills/ package)
 ├── sessions/              # per-user conversation history (*.jsonl)
 ├── memories/              # per-user long-term memories (*.jsonl)
 ├── reminders/             # package + reminders.jsonl

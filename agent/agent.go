@@ -12,6 +12,7 @@ import (
 	"custom-agent/gateway"
 	"custom-agent/memory"
 	"custom-agent/session"
+	"custom-agent/skills"
 	"custom-agent/tools"
 	"custom-agent/wallet/redact"
 
@@ -45,11 +46,18 @@ type Agent struct {
 	tools        *tools.Tools
 	memoryStore  *memory.Store
 	convStore    *conversation.Store
+	skillsDir    string
+	skillsMgr    *skills.Manager
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
-func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store) *Agent {
+// skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
+func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+	var skillsMgr *skills.Manager
+	if skillsDir != "" {
+		skillsMgr = skills.NewManager(skillsDir)
+	}
 	return &Agent{
 		client:       client,
 		systemPrompt: systemPrompt,
@@ -57,6 +65,8 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 		tools:        toolSet,
 		memoryStore:  toolSet.MemoryStore,
 		convStore:    convStore,
+		skillsDir:    skillsDir,
+		skillsMgr:    skillsMgr,
 	}
 }
 
@@ -65,6 +75,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return "Hello! Send me a message and I'll respond."
+	}
+
+	// Handle newSkill command (interactive flow)
+	if handled, res := a.handleNewSkill(ctx, text, msg.Platform, msg.UserID); handled {
+		return res
 	}
 
 	// Handle /new command
@@ -135,10 +150,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		}
 	}
 
+	systemContent := a.systemPrompt
+	if a.skillsMgr != nil {
+		if block := a.buildSkillsDescriptionBlock(); block != "" {
+			systemContent += "\n\n" + block
+		}
+	}
 	messages := make([]openai.ChatCompletionMessage, 0, len(recent)+5)
 	messages = append(messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleSystem,
-		Content: a.systemPrompt,
+		Content: systemContent,
 	})
 	// When user wants to send and we have prior context, inject reminder so LLM doesn't repeat prior "Done!" without calling the tool
 	if a.tools.Wallet != nil && len(recent) > 0 && wantsWalletSend(text) {
@@ -326,6 +347,31 @@ func claimsWalletWasSent(text string) bool {
 		return false
 	}
 	return walletSentClaim.MatchString(text)
+}
+
+const maxSkillDescriptionsLen = 1500
+
+func (a *Agent) buildSkillsDescriptionBlock() string {
+	if a.skillsMgr == nil {
+		return ""
+	}
+	list, err := a.skillsMgr.List()
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("--- Available skills (use list_skills / read_skill to inspect) ---\n")
+	n := 0
+	for _, s := range list {
+		line := "- " + s.Name + ": " + s.Description + "\n"
+		if b.Len()+len(line) > maxSkillDescriptionsLen {
+			break
+		}
+		b.WriteString(line)
+		n++
+	}
+	b.WriteString("--- End skills ---")
+	return b.String()
 }
 
 // handleSpawnSubagents parses spawn_subagents args, runs sub-agents concurrently, and returns formatted results.
