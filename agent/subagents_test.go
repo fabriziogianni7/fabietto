@@ -68,7 +68,7 @@ func TestRunSubagents_OrderPreserved(t *testing.T) {
 
 	toolSet := tools.NewTools("", memory.NewStore(nil))
 	var convStore *conversation.Store
-	a := New(client, "You are helpful.", 0, toolSet, convStore)
+	a := New(client, "You are helpful.", 0, toolSet, convStore, "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

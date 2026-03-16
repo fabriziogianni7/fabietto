@@ -18,6 +18,7 @@ import (
 
 	"custom-agent/memory"
 	"custom-agent/reminders"
+	"custom-agent/skills"
 	"custom-agent/x402client"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -25,14 +26,17 @@ import (
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
-	"read_file":    true,
-	"web_search":   true,
-	"read_memory":  true,
-	"http_request": true,
+	"read_file":        true,
+	"web_search":       true,
+	"read_memory":      true,
+	"http_request":     true,
+	"list_skills":      true,
+	"read_skill":       true,
+	"read_skill_script": true,
 }
 
 // WalletService is the interface for policy-gated wallet operations. Optional.
@@ -48,6 +52,20 @@ type WalletService interface {
 	ListTransactions(chainID int64, limit int) (string, error)
 }
 
+// SkillsManager is the interface for listing and reading skills. Optional.
+type SkillsManager interface {
+	List() ([]skills.SkillSummary, error)
+	Get(name string) (skills.Skill, error)
+	ReadScript(skillName, relPath string) (string, error)
+	Dir() string
+}
+
+// SkillsWriter extends SkillsManager with write capability for newSkill flow.
+type SkillsWriter interface {
+	SkillsManager
+	WriteSkill(name string, skillMd string, scripts map[string]string) error
+}
+
 // Tools holds tool execution state (e.g. API keys). Create with NewTools.
 type Tools struct {
 	BraveSearchAPIKey string
@@ -55,6 +73,8 @@ type Tools struct {
 	ReminderStore     *reminders.Store
 	Wallet            WalletService // optional; when set, wallet tools are available
 	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
+	Skills            SkillsManager // optional; when set, skills tools are available
+	LLMClient         *openai.Client // optional; when set, write_skill runs security/feasibility checks
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -79,6 +99,16 @@ func (t *Tools) SetWallet(w WalletService) {
 // SetX402Client sets the optional x402-aware HTTP client. Call when wallet is enabled for paid API support.
 func (t *Tools) SetX402Client(c *x402client.Client) {
 	t.X402Client = c
+}
+
+// SetSkills sets the optional skills manager. Call when skills are enabled.
+func (t *Tools) SetSkills(sm SkillsManager) {
+	t.Skills = sm
+}
+
+// SetLLMClient sets the optional LLM client for write_skill security/feasibility checks.
+func (t *Tools) SetLLMClient(c *openai.Client) {
+	t.LLMClient = c
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -375,6 +405,63 @@ func Definitions() []openai.Tool {
 				},
 			},
 		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "list_skills",
+				Description: "List the names and short descriptions of all available skills. Use when you need to see what skills exist before deciding which to use.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "read_skill",
+				Description: "Read a skill by name. Use full=true to get full instructions and script paths; use full=false for description only.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"name": {Type: jsonschema.String, Description: "Skill name (from list_skills)"},
+						"full": {Type: jsonschema.Boolean, Description: "If true, return full body and scripts. Default true."},
+					},
+					Required: []string{"name"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "read_skill_script",
+				Description: "Read the contents of a script file within a skill (e.g. scripts/process.py). Use when the skill references scripts you need to run or inspect.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"name": {Type: jsonschema.String, Description: "Skill name"},
+						"path": {Type: jsonschema.String, Description: "Relative path to script (e.g. scripts/process.py)"},
+					},
+					Required: []string{"name", "path"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "write_skill",
+				Description: "Persist a new skill to disk. Automatically runs security and feasibility checks before saving. Use when the user asks to add, create, or install a skill—compose the SKILL.md (YAML frontmatter + body) and call this. Creates skills/<name>/SKILL.md and optional scripts.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"name": {Type: jsonschema.String, Description: "Skill name (alphanumeric, hyphen, underscore only)"},
+						"skill_md": {Type: jsonschema.String, Description: "Full SKILL.md content including YAML frontmatter"},
+						"scripts": {Type: jsonschema.Object, Description: "Optional map of relative path to content (e.g. {\"process.py\": \"...\"})"},
+					},
+					Required: []string{"name", "skill_md"},
+				},
+			},
+		},
 	}
 }
 
@@ -434,6 +521,14 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
 		return t.walletListTransactions(strArgs, args)
+	case "list_skills":
+		return t.listSkills()
+	case "read_skill":
+		return t.readSkill(strArgs, args)
+	case "read_skill_script":
+		return t.readSkillScript(strArgs)
+	case "write_skill":
+		return t.writeSkill(strArgs, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -530,6 +625,120 @@ func (t *Tools) walletListTransactions(args map[string]string, rawArgs map[strin
 		}
 	}
 	return t.Wallet.ListTransactions(chainID, limit)
+}
+
+func (t *Tools) listSkills() (string, error) {
+	if t.Skills == nil {
+		return "Skills not configured. Set SKILLS_DIR to enable.", nil
+	}
+	list, err := t.Skills.List()
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if len(list) == 0 {
+		return "No skills installed. Use newSkill to add one.", nil
+	}
+	var b strings.Builder
+	for _, s := range list {
+		b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (t *Tools) readSkill(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Skills == nil {
+		return "Skills not configured.", nil
+	}
+	name := strings.TrimSpace(args["name"])
+	if name == "" {
+		return "Error: name is required.", nil
+	}
+	full := true
+	if rawArgs != nil {
+		if v, ok := rawArgs["full"].(bool); ok {
+			full = v
+		}
+	}
+	skill, err := t.Skills.Get(name)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if !full {
+		return fmt.Sprintf("name: %s\ndescription: %s", skill.Name, skill.Description), nil
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("name: %s\n", skill.Name))
+	b.WriteString(fmt.Sprintf("description: %s\n\n", skill.Description))
+	b.WriteString("--- body ---\n")
+	b.WriteString(skill.Body)
+	if len(skill.Scripts) > 0 {
+		b.WriteString("\n\n--- scripts ---\n")
+		for _, s := range skill.Scripts {
+			b.WriteString(fmt.Sprintf("- %s (%s)\n", s.Path, s.Language))
+		}
+	}
+	return b.String(), nil
+}
+
+func (t *Tools) readSkillScript(args map[string]string) (string, error) {
+	if t.Skills == nil {
+		return "Skills not configured.", nil
+	}
+	name := strings.TrimSpace(args["name"])
+	path := strings.TrimSpace(args["path"])
+	if name == "" || path == "" {
+		return "Error: name and path are required.", nil
+	}
+	content, err := t.Skills.ReadScript(name, path)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return content, nil
+}
+
+func (t *Tools) writeSkill(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	sw, ok := t.Skills.(SkillsWriter)
+	if !ok || sw == nil {
+		return "Skills write not configured.", nil
+	}
+	name := strings.TrimSpace(args["name"])
+	skillMd := args["skill_md"]
+	if name == "" || skillMd == "" {
+		return "Error: name and skill_md are required.", nil
+	}
+	scripts := make(map[string]string)
+	if rawArgs != nil {
+		if m, ok := rawArgs["scripts"].(map[string]interface{}); ok {
+			for k, v := range m {
+				if s, ok := v.(string); ok {
+					scripts[k] = s
+				}
+			}
+		}
+	}
+	// Run security and feasibility checks when LLM client is available
+	if t.LLMClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		secResult, err := skills.RunSecurityCheck(ctx, t.LLMClient, skillMd, scripts)
+		if err != nil {
+			return "Security check failed: " + err.Error(), nil
+		}
+		if !secResult.Safe || secResult.Severity == "high" {
+			return "Skill rejected for security reasons:\n" + strings.Join(secResult.Issues, "\n") + "\n\nPlease revise and try again.", nil
+		}
+		feasResult, err := skills.RunFeasibilityCheck(ctx, t.LLMClient, skillMd, scripts)
+		if err != nil {
+			return "Feasibility check failed: " + err.Error(), nil
+		}
+		if !feasResult.Clear {
+			return "Skill has clarity or feasibility issues:\n" + strings.Join(feasResult.Issues, "\n") + "\n\nPlease revise and try again.", nil
+		}
+	}
+	if err := sw.WriteSkill(name, skillMd, scripts); err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return fmt.Sprintf("Skill %q saved to %s.", name, filepath.Join(sw.Dir(), name)), nil
 }
 
 // InjectWalletArgs adds platform, user_id, chat_id to args for wallet tools.
