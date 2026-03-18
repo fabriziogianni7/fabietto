@@ -33,6 +33,11 @@ func parseInt64(s string, defaultVal int64) int64 {
 	return n
 }
 
+func parseBool(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	return s == "1" || s == "true" || s == "yes"
+}
+
 // Config holds validated application configuration.
 type Config struct {
 	TelegramBotToken     string
@@ -61,6 +66,11 @@ type Config struct {
 
 	// Skills: directory for user-installed skills (OpenClaw-style SKILL.md folders). Default: ./skills-data
 	SkillsDir string
+
+	// Autonomous mode: use x402 router for LLM instead of Groq, require wallet for permits.
+	AutonomousMode bool   // when true, use X402_ROUTER_URL for LLM, GROQ_API_KEY optional
+	X402RouterURL  string // default https://ai.xgate.run/v1
+	X402PermitCap  string // optional session spend cap in USDC (default "50")
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -90,9 +100,18 @@ func Load() (*Config, error) {
 		WalletChainsJSON:    strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
 		WalletDefaultChainID: parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
 		SkillsDir:           strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+		AutonomousMode:      parseBool(os.Getenv("AUTONOMOUS_MODE")),
+		X402RouterURL:       strings.TrimSpace(os.Getenv("X402_ROUTER_URL")),
+		X402PermitCap:       strings.TrimSpace(os.Getenv("X402_PERMIT_CAP")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
+	}
+	if cfg.X402RouterURL == "" {
+		cfg.X402RouterURL = "https://ai.xgate.run/v1"
+	}
+	if cfg.X402PermitCap == "" {
+		cfg.X402PermitCap = "50"
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -105,9 +124,30 @@ func Load() (*Config, error) {
 func (c *Config) validate() error {
 	var missing []string
 
-	if c.GroqAPIKey == "" {
-		missing = append(missing, "GROQ_API_KEY")
+	if c.AutonomousMode {
+		// Autonomous mode: require wallet for x402 permits, GROQ_API_KEY optional
+		if c.EVM_RPC_URL == "" {
+			missing = append(missing, "EVM_RPC_URL (required for autonomous mode)")
+		}
+		if c.WalletSignerBackend == "" {
+			c.WalletSignerBackend = "env"
+		}
+		if c.WalletPrivateKeyEnv == "" {
+			c.WalletPrivateKeyEnv = "WALLET_PRIVATE_KEY"
+		}
+		if c.WalletSignerBackend == "env" && os.Getenv(c.WalletPrivateKeyEnv) == "" {
+			missing = append(missing, c.WalletPrivateKeyEnv+" (required for autonomous mode)")
+		}
+		if c.X402RouterURL == "" {
+			missing = append(missing, "X402_ROUTER_URL or set default")
+		}
+	} else {
+		// Non-autonomous: require Groq API key
+		if c.GroqAPIKey == "" {
+			missing = append(missing, "GROQ_API_KEY")
+		}
 	}
+
 	if c.BraveSearchAPIKey == "" {
 		missing = append(missing, "BRAVE_SEARCH_API_KEY")
 	}
