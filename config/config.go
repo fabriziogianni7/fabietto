@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -40,25 +41,25 @@ func parseBool(s string) bool {
 
 // Config holds validated application configuration.
 type Config struct {
-	TelegramBotToken     string
-	GroqAPIKey           string
-	BraveSearchAPIKey    string
-	DiscordToken         string // optional
-	HTTPPort             string // optional, e.g. "5000"
-	SignalCliURL         string // optional, signal-cli-rest-api URL
-	SignalNumber         string // optional, bot's Signal number
-	CompactionThreshold  int    // optional, token count to trigger compaction (default 4000)
-	OllamaURL            string // optional, e.g. "http://localhost:11434" for embeddings
-	OllamaEmbedModel     string // optional, e.g. "nomic-embed-text" (default)
+	TelegramBotToken    string
+	GroqAPIKey          string
+	BraveSearchAPIKey   string
+	DiscordToken        string // optional
+	HTTPPort            string // optional, e.g. "5000"
+	SignalCliURL        string // optional, signal-cli-rest-api URL
+	SignalNumber        string // optional, bot's Signal number
+	CompactionThreshold int    // optional, token count to trigger compaction (default 4000)
+	OllamaURL           string // optional, e.g. "http://localhost:11434" for embeddings
+	OllamaEmbedModel    string // optional, e.g. "nomic-embed-text" (default)
 
 	// Wallet (optional). If EVM_RPC_URL and signer are set, wallet tools are enabled.
-	EVM_RPC_URL          string // e.g. "https://eth-mainnet.g.alchemy.com/v2/..."
-	ChainID              int64  // e.g. 1 for mainnet (used when WALLET_CHAINS not set)
-	WalletSignerBackend  string // "env" | "kms" | "hsm" (default: env)
-	WalletPrivateKeyEnv  string // env var name for key (default: WALLET_PRIVATE_KEY)
-	WalletAccountMode    string // "eoa" | "smart" (default: eoa)
+	EVM_RPC_URL            string // e.g. "https://eth-mainnet.g.alchemy.com/v2/..."
+	ChainID                int64  // e.g. 1 for mainnet (used when WALLET_CHAINS not set)
+	WalletSignerBackend    string // "env" | "kms" | "hsm" (default: env)
+	WalletPrivateKeyEnv    string // env var name for key (default: WALLET_PRIVATE_KEY)
+	WalletAccountMode      string // "eoa" | "smart" (default: eoa)
 	WalletNativeSpendLimit string // wei string for auto-allow threshold, "0" = require approval for all
-	WalletApprovalDir    string // dir for approval persistence (optional)
+	WalletApprovalDir      string // dir for approval persistence (optional)
 
 	// Multichain: JSON array of {chain_id, rpc_url, explorer, name}. If empty, use EVM_RPC_URL+CHAIN_ID.
 	WalletChainsJSON     string // e.g. [{"chain_id":1,"rpc_url":"...","explorer":"https://etherscan.io","name":"Ethereum"}]
@@ -71,6 +72,21 @@ type Config struct {
 	AutonomousMode bool   // when true, use X402_ROUTER_URL for LLM, GROQ_API_KEY optional
 	X402RouterURL  string // default https://ai.xgate.run/v1
 	X402PermitCap  string // optional session spend cap in USDC (default "50")
+	X402Model      string // model for x402 router (default openai:gpt-4); use "auto" for router auto-selection
+
+	// Opportunity scan cron (autonomous mode only). 0 = disabled.
+	OpportunityScanIntervalMinutes int    // default 0
+	TelegramOwnerChatID            string // chat ID to receive scan output and approvals (routed via existing bot)
+
+	// Alchemy Data API (optional). When set, portfolio tools (wallet_get_portfolio, wallet_get_portfolio_value,
+	// wallet_get_activity, wallet_simulate_transaction) are enabled. Uses Token API, Prices API, Transfers API, Simulation API.
+	// ALCHEMY_API_KEY enables Alchemy; URLs are derived per chain. Or set ALCHEMY_BASE_URL for a single explicit URL.
+	AlchemyAPIKey  string // e.g. from dashboard.alchemy.com; when set, portfolio tools enabled
+	AlchemyBaseURL string // optional override; when set, use for default chain instead of deriving from key
+
+	// X402MinBaseUSDC: minimum USDC to keep on Base (chain 8453) for inference costs. Agent must not trade below this.
+	// Default 10 when autonomous mode enabled. Used for runway checks via wallet_get_portfolio_value.
+	X402MinBaseUSDC string // e.g. "10"
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -87,22 +103,28 @@ func Load() (*Config, error) {
 		SignalCliURL:        strings.TrimSpace(os.Getenv("SIGNAL_CLI_URL")),
 		SignalNumber:        strings.TrimSpace(os.Getenv("SIGNAL_NUMBER")),
 		CompactionThreshold: parseInt(os.Getenv("CONTEXT_COMPACTION_THRESHOLD"), 4000),
-		OllamaURL:        strings.TrimSpace(os.Getenv("OLLAMA_URL")),
-		OllamaEmbedModel: strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
+		OllamaURL:           strings.TrimSpace(os.Getenv("OLLAMA_URL")),
+		OllamaEmbedModel:    strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
 
-		EVM_RPC_URL:         strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
-		ChainID:             parseInt64(os.Getenv("CHAIN_ID"), 1),
-		WalletSignerBackend: strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
-		WalletPrivateKeyEnv: strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
-		WalletAccountMode:   strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
-		WalletNativeSpendLimit: strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
-		WalletApprovalDir:   strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
-		WalletChainsJSON:    strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
-		WalletDefaultChainID: parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
-		SkillsDir:           strings.TrimSpace(os.Getenv("SKILLS_DIR")),
-		AutonomousMode:      parseBool(os.Getenv("AUTONOMOUS_MODE")),
-		X402RouterURL:       strings.TrimSpace(os.Getenv("X402_ROUTER_URL")),
-		X402PermitCap:       strings.TrimSpace(os.Getenv("X402_PERMIT_CAP")),
+		EVM_RPC_URL:                    strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
+		ChainID:                        parseInt64(os.Getenv("CHAIN_ID"), 1),
+		WalletSignerBackend:            strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
+		WalletPrivateKeyEnv:            strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
+		WalletAccountMode:              strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
+		WalletNativeSpendLimit:         strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
+		WalletApprovalDir:              strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
+		WalletChainsJSON:               strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
+		WalletDefaultChainID:           parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
+		SkillsDir:                      strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+		AutonomousMode:                 parseBool(os.Getenv("AUTONOMOUS_MODE")),
+		X402RouterURL:                  strings.TrimSpace(os.Getenv("X402_ROUTER_URL")),
+		X402PermitCap:                  strings.TrimSpace(os.Getenv("X402_PERMIT_CAP")),
+		X402Model:                      strings.TrimSpace(os.Getenv("X402_MODEL")),
+		OpportunityScanIntervalMinutes: parseInt(os.Getenv("OPPORTUNITY_SCAN_INTERVAL_MINUTES"), 0),
+		TelegramOwnerChatID:            strings.TrimSpace(os.Getenv("TELEGRAM_OWNER_CHAT_ID")),
+		AlchemyAPIKey:                  strings.TrimSpace(os.Getenv("ALCHEMY_API_KEY")),
+		AlchemyBaseURL:                 strings.TrimSpace(os.Getenv("ALCHEMY_BASE_URL")),
+		X402MinBaseUSDC:                strings.TrimSpace(os.Getenv("X402_MIN_BASE_USDC")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
@@ -112,6 +134,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.X402PermitCap == "" {
 		cfg.X402PermitCap = "50"
+	}
+	if cfg.X402Model == "" {
+		cfg.X402Model = "openai:gpt-4"
+	}
+	if cfg.AutonomousMode && cfg.X402MinBaseUSDC == "" {
+		cfg.X402MinBaseUSDC = "10"
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -140,6 +168,22 @@ func (c *Config) validate() error {
 		}
 		if c.X402RouterURL == "" {
 			missing = append(missing, "X402_ROUTER_URL or set default")
+		}
+		if c.OpportunityScanIntervalMinutes > 0 {
+			if c.TelegramBotToken == "" {
+				missing = append(missing, "TELEGRAM_BOT_TOKEN (required for opportunity scan; notifications routed through bot)")
+			}
+			if c.TelegramOwnerChatID == "" {
+				missing = append(missing, "TELEGRAM_OWNER_CHAT_ID (chat to receive scan output and approvals)")
+			}
+		}
+		// Autonomous mode: require Base (chain 8453) for x402 USDC payments
+		if !hasBaseChain(c) {
+			missing = append(missing, "Base (chain 8453) in WALLET_CHAINS or CHAIN_ID=8453 (x402 requires USDC on Base)")
+		}
+		// Autonomous mode: require Alchemy for portfolio valuation and USDC runway checks
+		if !c.AlchemyEnabled() {
+			missing = append(missing, "ALCHEMY_API_KEY or Alchemy EVM_RPC_URL (required for autonomous mode USDC runway checks)")
 		}
 	} else {
 		// Non-autonomous: require Groq API key
@@ -181,6 +225,32 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+// hasBaseChain returns true if Base (chain 8453) is configured for the wallet.
+func hasBaseChain(c *Config) bool {
+	const baseChainID = 8453
+	if c.WalletChainsJSON != "" {
+		var chains []struct {
+			ChainID int64 `json:"chain_id"`
+		}
+		if err := json.Unmarshal([]byte(c.WalletChainsJSON), &chains); err != nil {
+			return false
+		}
+		for _, ch := range chains {
+			if ch.ChainID == baseChainID {
+				return true
+			}
+		}
+		return false
+	}
+	return c.ChainID == baseChainID
+}
+
+// AlchemyEnabled returns true if Alchemy Data API is configured (portfolio tools available).
+func (c *Config) AlchemyEnabled() bool {
+	return c.AlchemyAPIKey != "" || c.AlchemyBaseURL != "" ||
+		(c.EVM_RPC_URL != "" && strings.Contains(c.EVM_RPC_URL, "alchemy.com"))
 }
 
 // WalletEnabled returns true if wallet should be initialized (RPC URL and signer key set).
