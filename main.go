@@ -5,30 +5,32 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"custom-agent/agent"
+	"custom-agent/alchemy"
 	"custom-agent/config"
 	"custom-agent/conversation"
 	"custom-agent/embedding"
 	"custom-agent/gateway"
 	"custom-agent/memory"
+	"custom-agent/opportunity"
 	"custom-agent/reminders"
 	"custom-agent/sessionqueue"
+	"custom-agent/skills"
 	"custom-agent/tools"
 	"custom-agent/wallet"
-	"custom-agent/x402client"
-	"custom-agent/skills"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
 	"custom-agent/wallet/policy"
 	"custom-agent/wallet/signer"
+	"custom-agent/x402client"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -39,16 +41,31 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	personality, err := os.ReadFile("PERSONALITY.md")
+	personalityPath := "PERSONALITY.md"
+	if cfg.AutonomousMode {
+		personalityPath = "PERSONALITY_AUTONOMOUS.md"
+	}
+	personality, err := os.ReadFile(personalityPath)
 	if err != nil {
-		log.Fatalf("failed to load PERSONALITY.md: %v", err)
+		log.Fatalf("failed to load %s: %v", personalityPath, err)
 	}
 	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), spawn parallel sub-agents (spawn_subagents), or http_request for HTTP APIs. When a task can be parallelized, use spawn_subagents."
+	if cfg.AutonomousMode {
+		toolInstruction += " Prioritize wallet and trading tools when seeking profitable opportunities. Use http_request with Tokenaru for onchain data before executing trades. Use x402_get_stats to check inference spend and runway before capital deployment."
+		minBase := cfg.X402MinBaseUSDC
+		if minBase == "" {
+			minBase = "10"
+		}
+		toolInstruction += " Reserve at least $" + minBase + " USDC on Base (chain 8453) for inference; never trade below."
+	}
 	if cfg.SkillsDir != "" {
 		toolInstruction += " When the user asks to add, create, or install a skill (even without saying newSkill), compose the SKILL.md content with YAML frontmatter and body, then use write_skill. The tool automatically runs security and feasibility checks before saving."
 	}
 	if cfg.WalletEnabled() {
 		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
+		if cfg.AlchemyEnabled() {
+			toolInstruction += " Use wallet_get_portfolio, wallet_get_portfolio_value, wallet_get_activity, and wallet_simulate_transaction for full holdings, USD valuation, activity history, and pre-trade simulation."
+		}
 	}
 	toolInstruction += "\n"
 
@@ -57,7 +74,11 @@ func main() {
 	if cfg.WalletEnabled() && (cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env") {
 		if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
 			var errX402 error
-			x402Client, errX402 = x402client.New(pk)
+			if cfg.AutonomousMode && cfg.EVM_RPC_URL != "" && cfg.X402PermitCap != "" {
+				x402Client, errX402 = x402client.NewWithUpto(pk, cfg.EVM_RPC_URL, cfg.X402PermitCap)
+			} else {
+				x402Client, errX402 = x402client.New(pk)
+			}
 			if errX402 != nil {
 				if cfg.AutonomousMode {
 					log.Fatalf("[x402] autonomous mode requires x402 client: %v", errX402)
@@ -110,6 +131,9 @@ func main() {
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
 	if x402Client != nil {
 		toolSet.SetX402Client(x402Client)
+		if cfg.AutonomousMode && cfg.X402RouterURL != "" {
+			toolSet.SetX402StatsConfig(cfg.X402RouterURL, cfg.X402PermitCap)
+		}
 	}
 	if cfg.SkillsDir != "" {
 		sm := skills.NewManager(cfg.SkillsDir)
@@ -174,6 +198,17 @@ func main() {
 		walletSvc := wallet.NewService(chainRegistry, sgn, policyEngine, approvalStore, notifier, historyStore)
 		toolSet.SetWallet(walletSvc)
 		log.Printf("[wallet] enabled, address %s, default chain %d, backend=%s", walletSvc.WalletAddress(), walletSvc.DefaultChainID(), cfg.WalletSignerBackend)
+
+		// Alchemy: when enabled, build client and attach for portfolio tools
+		if cfg.AlchemyEnabled() {
+			alchemyCfg := alchemyConfig(cfg, chainRegistry)
+			if alc, err := alchemy.New(alchemyCfg); err != nil {
+				log.Printf("[alchemy] client init failed: %v", err)
+			} else if alc != nil {
+				toolSet.SetAlchemy(alc)
+				log.Printf("[alchemy] portfolio tools enabled")
+			}
+		}
 	}
 
 	// Build system prompt: personality + tools, then append WALLET.md when wallet is enabled
@@ -187,16 +222,12 @@ func main() {
 		walletBlock = strings.Replace(walletBlock, "{{DEFAULT_CHAIN_ID}}", strconv.FormatInt(toolSet.Wallet.DefaultChainID(), 10), 1)
 		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
 	}
-	if cfg.AutonomousMode {
-		systemPrompt += "\n\n--- Autonomous profit mission ---\nYour objective is to grow capital and sustain your own operating costs. Monitor balances and cost runway. Use tools and skills (e.g. Tokenaru for onchain data) to gather market context before taking action. Prioritize profitable onchain opportunities. Treat profit generation as a first-class task, not just user-request handling. When idle, look for opportunities to deploy capital."
-	}
-
 	parentModel := ""
 	subagentModel := ""
 	skipCompaction := false
 	if cfg.AutonomousMode {
-		parentModel = "auto"
-		subagentModel = "auto"
+		parentModel = cfg.X402Model
+		subagentModel = cfg.X402Model
 		skipCompaction = true
 	}
 	a := agent.New(llm, parentModel, subagentModel, systemPrompt, cfg.CompactionThreshold, skipCompaction, toolSet, convStore, cfg.SkillsDir)
@@ -224,9 +255,66 @@ func main() {
 	cronRunner := reminders.NewRunner(reminderStore, senderRegistry)
 	go cronRunner.Start(ctx)
 
+	// Start opportunity scan cron (autonomous mode only; sends synthetic message to agent)
+	if cfg.AutonomousMode && cfg.OpportunityScanIntervalMinutes > 0 {
+		scanInterval := time.Duration(cfg.OpportunityScanIntervalMinutes) * time.Minute
+		oppRunner := opportunity.NewRunner(handler, senderRegistry, "telegram", cfg.TelegramOwnerChatID, cfg.TelegramOwnerChatID, scanInterval)
+		go oppRunner.Start(ctx)
+	}
+
+	// Log x402 router spend stats periodically (autonomous mode only)
+	if cfg.AutonomousMode && x402Client != nil {
+		go logX402Stats(ctx, x402Client, cfg.X402RouterURL, cfg.X402PermitCap)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down...")
 	cancel()
+}
+
+// alchemyConfig builds Alchemy client config from app config and chain registry.
+func alchemyConfig(cfg *config.Config, chainRegistry *chains.Registry) alchemy.Config {
+	c := alchemy.Config{
+		APIKey:  cfg.AlchemyAPIKey,
+		BaseURL: cfg.AlchemyBaseURL,
+	}
+	if cfg.AlchemyAPIKey == "" && cfg.AlchemyBaseURL == "" && cfg.EVM_RPC_URL != "" && strings.Contains(cfg.EVM_RPC_URL, "alchemy.com") {
+		c.BaseURL = strings.TrimSuffix(cfg.EVM_RPC_URL, "/")
+	}
+	if chainRegistry != nil {
+		c.ChainURLs = chainRegistry.ChainURLs("alchemy.com")
+	}
+	return c
+}
+
+// logX402Stats periodically fetches /v1/stats and logs total_spent_usd, total_tokens, and remaining budget.
+func logX402Stats(ctx context.Context, client *x402client.Client, routerURL, permitCap string) {
+	capUSD, _ := strconv.ParseFloat(permitCap, 64)
+	logOnce := func() {
+		stats, err := client.FetchRouterStats(ctx, routerURL)
+		if err != nil {
+			log.Printf("[x402] stats: %v", err)
+			return
+		}
+		spentUSD, _ := strconv.ParseFloat(stats.TotalSpentUSD, 64)
+		remaining := capUSD - spentUSD
+		if remaining < 0 {
+			remaining = 0
+		}
+		log.Printf("[x402] stats: total_spent_usd=%s total_tokens=%d remaining_usd≈%.2f",
+			stats.TotalSpentUSD, stats.TotalTokens, remaining)
+	}
+	logOnce() // first run immediately
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			logOnce()
+		}
+	}
 }
