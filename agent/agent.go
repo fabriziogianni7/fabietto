@@ -40,17 +40,18 @@ func subagentModelForIndex(idx int) string {
 
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
-	client         *openai.Client
-	parentModel    string // model for chat completion; when empty, use default
-	subagentModel  string // model for subagents; when empty, use subagentModelForIndex (Groq rotation)
-	systemPrompt   string
-	compactor      *compaction.Compactor
-	skipCompaction bool // when true, bypass compaction (e.g. autonomous mode)
-	tools          *tools.Tools
-	memoryStore    *memory.Store
-	convStore      *conversation.Store
-	skillsDir      string
-	skillsMgr      *skills.Manager
+	client               *openai.Client
+	parentModel          string                   // model for chat completion; when empty, use default
+	subagentModel        string                   // model for subagents; when empty, use subagentModelForIndex (Groq rotation)
+	subagentModelForRole func(role string) string // optional; when set and role non-empty, overrides subagentModel
+	systemPrompt         string
+	compactor            *compaction.Compactor
+	skipCompaction       bool // when true, bypass compaction (e.g. autonomous mode)
+	tools                *tools.Tools
+	memoryStore          *memory.Store
+	convStore            *conversation.Store
+	skillsDir            string
+	skillsMgr            *skills.Manager
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
@@ -59,7 +60,8 @@ type Agent struct {
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
 // skipCompaction: when true, bypass compaction entirely (e.g. autonomous mode).
 // skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
-func New(client *openai.Client, parentModel string, subagentModel string, systemPrompt string, tokenThreshold int, skipCompaction bool, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+// modelForRole: optional; when non-nil and spawn_subagents uses role, returns model for that role (autonomous mode).
+func New(client *openai.Client, parentModel string, subagentModel string, systemPrompt string, tokenThreshold int, skipCompaction bool, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string, modelForRole func(role string) string) *Agent {
 	if parentModel == "" {
 		parentModel = agentParentModel
 	}
@@ -68,17 +70,18 @@ func New(client *openai.Client, parentModel string, subagentModel string, system
 		skillsMgr = skills.NewManager(skillsDir)
 	}
 	return &Agent{
-		client:         client,
-		parentModel:    parentModel,
-		subagentModel:  subagentModel,
-		systemPrompt:   systemPrompt,
-		compactor:      compaction.NewCompactor(client, parentModel, tokenThreshold),
-		skipCompaction: skipCompaction,
-		tools:          toolSet,
-		memoryStore:    toolSet.MemoryStore,
-		convStore:      convStore,
-		skillsDir:      skillsDir,
-		skillsMgr:      skillsMgr,
+		client:               client,
+		parentModel:          parentModel,
+		subagentModel:        subagentModel,
+		subagentModelForRole: modelForRole,
+		systemPrompt:         systemPrompt,
+		compactor:            compaction.NewCompactor(client, parentModel, tokenThreshold),
+		skipCompaction:       skipCompaction,
+		tools:                toolSet,
+		memoryStore:          toolSet.MemoryStore,
+		convStore:            convStore,
+		skillsDir:            skillsDir,
+		skillsMgr:            skillsMgr,
 	}
 }
 

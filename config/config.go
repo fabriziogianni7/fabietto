@@ -87,6 +87,14 @@ type Config struct {
 	// X402MinBaseUSDC: minimum USDC to keep on Base (chain 8453) for inference costs. Agent must not trade below this.
 	// Default 10 when autonomous mode enabled. Used for runway checks via wallet_get_portfolio_value.
 	X402MinBaseUSDC string // e.g. "10"
+
+	// Role-specific subagent models (autonomous mode). When spawn_subagents uses role, maps to model.
+	// Omit to use X402Model for all. Saves cost: parser/research use cheap models.
+	X402ModelQuant    string // quant: math/strategy
+	X402ModelParser   string // parser: extraction/parsing
+	X402ModelResearch string // research: web search/info
+	X402ModelRisk     string // risk: exposure/VaR
+	X402ModelSubagent string // default when role omitted or unknown
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -125,6 +133,11 @@ func Load() (*Config, error) {
 		AlchemyAPIKey:                  strings.TrimSpace(os.Getenv("ALCHEMY_API_KEY")),
 		AlchemyBaseURL:                 strings.TrimSpace(os.Getenv("ALCHEMY_BASE_URL")),
 		X402MinBaseUSDC:                strings.TrimSpace(os.Getenv("X402_MIN_BASE_USDC")),
+		X402ModelQuant:                 strings.TrimSpace(os.Getenv("X402_MODEL_QUANT")),
+		X402ModelParser:                strings.TrimSpace(os.Getenv("X402_MODEL_PARSER")),
+		X402ModelResearch:              strings.TrimSpace(os.Getenv("X402_MODEL_RESEARCH")),
+		X402ModelRisk:                  strings.TrimSpace(os.Getenv("X402_MODEL_RISK")),
+		X402ModelSubagent:              strings.TrimSpace(os.Getenv("X402_MODEL_SUBAGENT")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
@@ -245,6 +258,39 @@ func hasBaseChain(c *Config) bool {
 		return false
 	}
 	return c.ChainID == baseChainID
+}
+
+// ModelForRole returns the x402 model for the given spawn_subagents role.
+// Role is matched case-insensitively: quant, parser, research, risk.
+// Empty role or unknown role returns fallback (X402ModelSubagent if set, else X402Model).
+func (c *Config) ModelForRole(role string) string {
+	fallback := c.X402ModelSubagent
+	if fallback == "" {
+		fallback = c.X402Model
+	}
+	r := strings.ToLower(strings.TrimSpace(role))
+	if r == "" {
+		return fallback
+	}
+	switch r {
+	case "quant":
+		if c.X402ModelQuant != "" {
+			return c.X402ModelQuant
+		}
+	case "parser":
+		if c.X402ModelParser != "" {
+			return c.X402ModelParser
+		}
+	case "research":
+		if c.X402ModelResearch != "" {
+			return c.X402ModelResearch
+		}
+	case "risk":
+		if c.X402ModelRisk != "" {
+			return c.X402ModelRisk
+		}
+	}
+	return fallback
 }
 
 // AlchemyEnabled returns true if Alchemy Data API is configured (portfolio tools available).

@@ -144,6 +144,11 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 		}
 
 		model := a.subagentModel
+		if a.subagentModelForRole != nil && spec.Role != "" {
+			if m := a.subagentModelForRole(spec.Role); m != "" {
+				model = m
+			}
+		}
 		if model == "" {
 			model = subagentModelForIndex(spec.Index)
 		}

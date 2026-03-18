@@ -225,12 +225,14 @@ func main() {
 	parentModel := ""
 	subagentModel := ""
 	skipCompaction := false
+	var modelForRole func(role string) string
 	if cfg.AutonomousMode {
 		parentModel = cfg.X402Model
 		subagentModel = cfg.X402Model
 		skipCompaction = true
+		modelForRole = func(role string) string { return cfg.ModelForRole(role) }
 	}
-	a := agent.New(llm, parentModel, subagentModel, systemPrompt, cfg.CompactionThreshold, skipCompaction, toolSet, convStore, cfg.SkillsDir)
+	a := agent.New(llm, parentModel, subagentModel, systemPrompt, cfg.CompactionThreshold, skipCompaction, toolSet, convStore, cfg.SkillsDir, modelForRole)
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

@@ -344,7 +344,7 @@ func Definitions() []openai.Tool {
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						"tasks": {Type: jsonschema.Array, Description: "List of independent subtasks to run in parallel", Items: &jsonschema.Definition{Type: jsonschema.String}},
-						"role":  {Type: jsonschema.String, Description: "Optional role for sub-agents (e.g. 'research specialist')"},
+						"role":  {Type: jsonschema.String, Description: "Optional role. Use 'quant' for math/strategy/position sizing; 'parser' for extraction/parsing; 'research' for web search/info gathering; 'risk' for exposure/VaR. Omit for general tasks. In autonomous mode, each role uses a cost-optimized model."},
 					},
 					Required: []string{"tasks"},
 				},

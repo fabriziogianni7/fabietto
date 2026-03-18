@@ -201,3 +201,45 @@ func TestAlchemyEnabled(t *testing.T) {
 		t.Error("AlchemyEnabled should be true when EVM_RPC_URL contains alchemy.com")
 	}
 }
+
+func TestModelForRole(t *testing.T) {
+	cfg := &Config{
+		X402Model:         "openai:gpt-5",
+		X402ModelQuant:    "openai:gpt-5",
+		X402ModelParser:   "openai:gpt-5-nano",
+		X402ModelResearch: "openai:gpt-5-mini",
+		X402ModelRisk:     "openai:gpt-5",
+		X402ModelSubagent: "openai:gpt-5-mini",
+	}
+
+	if got := cfg.ModelForRole("quant"); got != "openai:gpt-5" {
+		t.Errorf("ModelForRole(quant) = %q, want openai:gpt-5", got)
+	}
+	if got := cfg.ModelForRole("parser"); got != "openai:gpt-5-nano" {
+		t.Errorf("ModelForRole(parser) = %q, want openai:gpt-5-nano", got)
+	}
+	if got := cfg.ModelForRole("research"); got != "openai:gpt-5-mini" {
+		t.Errorf("ModelForRole(research) = %q, want openai:gpt-5-mini", got)
+	}
+	if got := cfg.ModelForRole("risk"); got != "openai:gpt-5" {
+		t.Errorf("ModelForRole(risk) = %q, want openai:gpt-5", got)
+	}
+	if got := cfg.ModelForRole("QUANT"); got != "openai:gpt-5" {
+		t.Errorf("ModelForRole(QUANT) = %q, want openai:gpt-5 (case-insensitive)", got)
+	}
+	if got := cfg.ModelForRole(""); got != "openai:gpt-5-mini" {
+		t.Errorf("ModelForRole(empty) = %q, want openai:gpt-5-mini (fallback to subagent)", got)
+	}
+	if got := cfg.ModelForRole("unknown"); got != "openai:gpt-5-mini" {
+		t.Errorf("ModelForRole(unknown) = %q, want openai:gpt-5-mini (fallback)", got)
+	}
+
+	// No role models set: fallback to X402Model
+	cfg2 := &Config{X402Model: "openai:gpt-4"}
+	if got := cfg2.ModelForRole("quant"); got != "openai:gpt-4" {
+		t.Errorf("ModelForRole(quant) with no role models = %q, want openai:gpt-4", got)
+	}
+	if got := cfg2.ModelForRole(""); got != "openai:gpt-4" {
+		t.Errorf("ModelForRole(empty) with no role models = %q, want openai:gpt-4", got)
+	}
+}
