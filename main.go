@@ -189,10 +189,12 @@ func main() {
 	}
 
 	parentModel := ""
+	skipCompaction := false
 	if cfg.AutonomousMode {
 		parentModel = "auto"
+		skipCompaction = true
 	}
-	a := agent.New(llm, parentModel, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir)
+	a := agent.New(llm, parentModel, systemPrompt, cfg.CompactionThreshold, skipCompaction, toolSet, convStore, cfg.SkillsDir)
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

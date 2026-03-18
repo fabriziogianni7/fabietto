@@ -40,22 +40,24 @@ func subagentModelForIndex(idx int) string {
 
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
-	client       *openai.Client
-	parentModel  string // model for chat completion; when empty, use default
-	systemPrompt string
-	compactor    *compaction.Compactor
-	tools        *tools.Tools
-	memoryStore  *memory.Store
-	convStore    *conversation.Store
-	skillsDir    string
-	skillsMgr    *skills.Manager
+	client         *openai.Client
+	parentModel    string // model for chat completion; when empty, use default
+	systemPrompt   string
+	compactor      *compaction.Compactor
+	skipCompaction bool   // when true, bypass compaction (e.g. autonomous mode)
+	tools          *tools.Tools
+	memoryStore    *memory.Store
+	convStore      *conversation.Store
+	skillsDir      string
+	skillsMgr      *skills.Manager
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
 // parentModel: model for chat completion; when empty, use default (Groq-specific).
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
+// skipCompaction: when true, bypass compaction entirely (e.g. autonomous mode).
 // skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
-func New(client *openai.Client, parentModel string, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+func New(client *openai.Client, parentModel string, systemPrompt string, tokenThreshold int, skipCompaction bool, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
 	if parentModel == "" {
 		parentModel = agentParentModel
 	}
@@ -64,15 +66,16 @@ func New(client *openai.Client, parentModel string, systemPrompt string, tokenTh
 		skillsMgr = skills.NewManager(skillsDir)
 	}
 	return &Agent{
-		client:       client,
-		parentModel:  parentModel,
-		systemPrompt: systemPrompt,
-		compactor:    compaction.NewCompactor(client, parentModel, tokenThreshold),
-		tools:        toolSet,
-		memoryStore:  toolSet.MemoryStore,
-		convStore:    convStore,
-		skillsDir:    skillsDir,
-		skillsMgr:    skillsMgr,
+		client:         client,
+		parentModel:    parentModel,
+		systemPrompt:   systemPrompt,
+		compactor:      compaction.NewCompactor(client, parentModel, tokenThreshold),
+		skipCompaction: skipCompaction,
+		tools:          toolSet,
+		memoryStore:    toolSet.MemoryStore,
+		convStore:      convStore,
+		skillsDir:      skillsDir,
+		skillsMgr:      skillsMgr,
 	}
 }
 
@@ -124,10 +127,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		// log handled by caller if needed
 	}
 
-	// Threshold-based compaction: summarize old context when it exceeds limit
-	summaryBlock, recent, _ := a.compactor.CompactIfNeeded(ctx, history, a.systemPrompt)
-	if recent == nil {
+	// Threshold-based compaction: summarize old context when it exceeds limit (skipped in autonomous mode)
+	var summaryBlock string
+	var recent []session.Message
+	if a.skipCompaction {
 		recent = session.Recent(history)
+	} else {
+		summaryBlock, recent, _ = a.compactor.CompactIfNeeded(ctx, history, a.systemPrompt)
+		if recent == nil {
+			recent = session.Recent(history)
+		}
 	}
 
 	// Retrieve relevant long-term memories and past conversation (embedding-based if available)
