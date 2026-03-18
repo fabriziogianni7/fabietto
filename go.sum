@@ -30,6 +30,8 @@ github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 h1:zuQyyAK
 github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06/go.mod h1:7nc4anLGjupUW/PeY5qiNYsdNXj7zopG+eqsS7To5IQ=
 github.com/coinbase/x402/go v0.0.0-20260312133034-8931cb3b337b h1:be2gtNmEm7gDVLY4cYileHpk3fI13+Z7QYhOeVIUU0Q=
 github.com/coinbase/x402/go v0.0.0-20260312133034-8931cb3b337b/go.mod h1:Igc3tBTV0bx8sK0s2zi0qNLO3M+jloH9nMuZx6t3r1Y=
+github.com/coinbase/x402/go v0.0.0-20260318010130-6a90fe93c57f h1:VmXakcNxw0yFZYbVlqvyo0AZrOEzZ1hN3pNw1wIwdL8=
+github.com/coinbase/x402/go v0.0.0-20260318010130-6a90fe93c57f/go.mod h1:Igc3tBTV0bx8sK0s2zi0qNLO3M+jloH9nMuZx6t3r1Y=
 github.com/consensys/gnark-crypto v0.18.1 h1:RyLV6UhPRoYYzaFnPQA4qK3DyuDgkTgskDdoGqFt3fI=
 github.com/consensys/gnark-crypto v0.18.1/go.mod h1:L3mXGFTe1ZN+RSJ+CLjUt9x7PNdx8ubaYfDROyp2Z8c=
 github.com/cpuguy83/go-md2man/v2 v2.0.5 h1:ZtcqGrnekaHpVLArFSe4HK5DoKx1T0rq2DwVB0alcyc=
