@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"custom-agent/alchemy"
 	"custom-agent/memory"
 	"custom-agent/reminders"
 	"custom-agent/skills"
@@ -26,17 +28,21 @@ import (
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "x402_get_stats", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "wallet_get_portfolio", "wallet_get_portfolio_value", "wallet_get_activity", "wallet_simulate_transaction", "list_skills", "read_skill", "read_skill_script", "write_skill"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
-	"read_file":        true,
-	"web_search":       true,
-	"read_memory":      true,
-	"http_request":     true,
-	"list_skills":      true,
-	"read_skill":       true,
-	"read_skill_script": true,
+	"read_file":                  true,
+	"web_search":                 true,
+	"read_memory":                true,
+	"http_request":               true,
+	"x402_get_stats":             true,
+	"wallet_get_portfolio":       true,
+	"wallet_get_portfolio_value": true,
+	"wallet_get_activity":        true,
+	"list_skills":                true,
+	"read_skill":                 true,
+	"read_skill_script":          true,
 }
 
 // WalletService is the interface for policy-gated wallet operations. Optional.
@@ -45,6 +51,7 @@ var ReadOnlyToolNames = map[string]bool{
 type WalletService interface {
 	WalletAddress() string
 	DefaultChainID() int64
+	ChainIDs() []int64
 	GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error)
 	ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteContractCall(ctx context.Context, chainID int64, to, dataHex, valueWei, platform, userID, chatID string) (string, error)
@@ -71,10 +78,13 @@ type Tools struct {
 	BraveSearchAPIKey string
 	MemoryStore       *memory.Store
 	ReminderStore     *reminders.Store
-	Wallet            WalletService // optional; when set, wallet tools are available
+	Wallet            WalletService      // optional; when set, wallet tools are available
 	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
-	Skills            SkillsManager // optional; when set, skills tools are available
-	LLMClient         *openai.Client // optional; when set, write_skill runs security/feasibility checks
+	X402RouterURL     string             // optional; when set with X402Client, x402_get_stats is available
+	X402PermitCap     string             // optional; session spend cap in USDC for x402_get_stats remaining calc
+	Alchemy           *alchemy.Client    // optional; when set, portfolio tools are available
+	Skills            SkillsManager      // optional; when set, skills tools are available
+	LLMClient         *openai.Client     // optional; when set, write_skill runs security/feasibility checks
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -101,6 +111,17 @@ func (t *Tools) SetX402Client(c *x402client.Client) {
 	t.X402Client = c
 }
 
+// SetX402StatsConfig sets router URL and permit cap for x402_get_stats. Call when autonomous mode uses x402 router.
+func (t *Tools) SetX402StatsConfig(routerURL, permitCap string) {
+	t.X402RouterURL = strings.TrimSuffix(routerURL, "/")
+	t.X402PermitCap = permitCap
+}
+
+// SetAlchemy sets the optional Alchemy client for portfolio tools.
+func (t *Tools) SetAlchemy(c *alchemy.Client) {
+	t.Alchemy = c
+}
+
 // SetSkills sets the optional skills manager. Call when skills are enabled.
 func (t *Tools) SetSkills(sm SkillsManager) {
 	t.Skills = sm
@@ -116,6 +137,7 @@ func (t *Tools) SetLLMClient(c *openai.Client) {
 //   - <write_file>{"path":"x","content":"y"}</function>
 //   - <function=web_search>{"query":"..."}</function>
 //   - (function=web_search>{"query":"..."}</function>  (model typo: ( instead of <)
+//
 // Returns name, args, and true if found.
 func ParseToolCallFromContent(content string) (name string, args string, ok bool) {
 	patterns := []string{
@@ -294,7 +316,7 @@ func Definitions() []openai.Tool {
 				Name:        "list_reminders",
 				Description: "List the user's scheduled reminders. Use when the user asks what reminders they have or to show their schedule.",
 				Parameters: jsonschema.Definition{
-					Type: jsonschema.Object,
+					Type:       jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{},
 				},
 			},
@@ -348,6 +370,17 @@ func Definitions() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
+				Name:        "x402_get_stats",
+				Description: "Get x402 router session stats: total_spent_usd, total_tokens, permit_cap, remaining_usd. Use at start of opportunity scans and before capital deployment to check inference cost runway. Requires autonomous mode with x402 router.",
+				Parameters: jsonschema.Definition{
+					Type:       jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
 				Name:        "wallet_get_balance",
 				Description: "Get the native token (ETH) balance of the wallet in wei. Use when the user asks about balance or funds. Omit chain_id for default chain.",
 				Parameters: jsonschema.Definition{
@@ -366,9 +399,9 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"to":         {Type: jsonschema.String, Description: "Recipient address (0x...)"},
+						"to":        {Type: jsonschema.String, Description: "Recipient address (0x...)"},
 						"value_wei": {Type: jsonschema.String, Description: "Amount in wei as decimal string"},
-						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+						"chain_id":  {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
 					Required: []string{"to", "value_wei"},
 				},
@@ -382,10 +415,10 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"to":         {Type: jsonschema.String, Description: "Contract address (0x...)"},
-						"data":       {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
+						"to":        {Type: jsonschema.String, Description: "Contract address (0x...)"},
+						"data":      {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
 						"value_wei": {Type: jsonschema.String, Description: "ETH to send in wei (0 for none)"},
-						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+						"chain_id":  {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
 					Required: []string{"to", "data"},
 				},
@@ -408,10 +441,69 @@ func Definitions() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
+				Name:        "wallet_get_portfolio",
+				Description: "Get full portfolio: native + ERC-20 token balances per chain. Requires Alchemy. Use when the user asks about holdings, positions, or what tokens they have.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id":     {Type: jsonschema.Integer, Description: "Optional chain ID. Omit for all configured chains."},
+						"include_zero": {Type: jsonschema.Boolean, Description: "Include zero balances (default false)."},
+					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_get_portfolio_value",
+				Description: "Get portfolio with USD valuation. Native + ERC-20 balances and total value. Use for runway, capital allocation, or PnL context.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id":     {Type: jsonschema.Integer, Description: "Optional chain ID. Omit for all configured chains."},
+						"include_zero": {Type: jsonschema.Boolean, Description: "Include zero balances (default false)."},
+					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_get_activity",
+				Description: "Get wallet activity: deposits, withdrawals, swap fills, incoming transfers. Use for PnL context or recent history beyond agent-initiated txs.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit for default chain."},
+						"limit":    {Type: jsonschema.Integer, Description: "Max transfers to return (default 20)."},
+					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_simulate_transaction",
+				Description: "Simulate a contract call before sending. Returns asset changes, gas estimate, revert reason. Use before wallet_execute_contract_call to check outcome.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"chain_id":  {Type: jsonschema.Integer, Description: "Chain ID. Omit for default chain."},
+						"to":        {Type: jsonschema.String, Description: "Contract address (0x...)"},
+						"data":      {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
+						"value_wei": {Type: jsonschema.String, Description: "ETH to send in wei (0 for none)"},
+					},
+					Required: []string{"to", "data"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
 				Name:        "list_skills",
 				Description: "List the names and short descriptions of all available skills. Use when you need to see what skills exist before deciding which to use.",
 				Parameters: jsonschema.Definition{
-					Type: jsonschema.Object,
+					Type:       jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{},
 				},
 			},
@@ -454,9 +546,9 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"name": {Type: jsonschema.String, Description: "Skill name (alphanumeric, hyphen, underscore only)"},
+						"name":     {Type: jsonschema.String, Description: "Skill name (alphanumeric, hyphen, underscore only)"},
 						"skill_md": {Type: jsonschema.String, Description: "Full SKILL.md content including YAML frontmatter"},
-						"scripts": {Type: jsonschema.Object, Description: "Optional map of relative path to content (e.g. {\"process.py\": \"...\"})"},
+						"scripts":  {Type: jsonschema.Object, Description: "Optional map of relative path to content (e.g. {\"process.py\": \"...\"})"},
 					},
 					Required: []string{"name", "skill_md"},
 				},
@@ -513,6 +605,8 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.deleteReminder(strArgs)
 	case "http_request":
 		return t.httpRequest(strArgs, args)
+	case "x402_get_stats":
+		return t.x402GetStats()
 	case "wallet_get_balance":
 		return t.walletGetBalance(strArgs, args)
 	case "wallet_execute_transfer":
@@ -521,6 +615,14 @@ func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
 		return t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
 		return t.walletListTransactions(strArgs, args)
+	case "wallet_get_portfolio":
+		return t.walletGetPortfolio(strArgs, args)
+	case "wallet_get_portfolio_value":
+		return t.walletGetPortfolioValue(strArgs, args)
+	case "wallet_get_activity":
+		return t.walletGetActivity(strArgs, args)
+	case "wallet_simulate_transaction":
+		return t.walletSimulateTransaction(strArgs, args)
 	case "list_skills":
 		return t.listSkills()
 	case "read_skill":
@@ -625,6 +727,266 @@ func (t *Tools) walletListTransactions(args map[string]string, rawArgs map[strin
 		}
 	}
 	return t.Wallet.ListTransactions(chainID, limit)
+}
+
+func (t *Tools) walletGetPortfolio(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Alchemy == nil || t.Wallet == nil {
+		return "Portfolio tools require Alchemy (ALCHEMY_API_KEY or ALCHEMY_BASE_URL) and wallet. Set both to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	includeZero := false
+	if rawArgs != nil {
+		if v, ok := rawArgs["include_zero"].(bool); ok {
+			includeZero = v
+		}
+	}
+	chainIDs := t.Wallet.ChainIDs()
+	if chainID > 0 {
+		chainIDs = []int64{chainID}
+	}
+	if len(chainIDs) == 0 {
+		chainIDs = []int64{t.Wallet.DefaultChainID()}
+	}
+	var b strings.Builder
+	addr := t.Wallet.WalletAddress()
+	for _, cid := range chainIDs {
+		// Native balance from wallet
+		nativeBal, err := t.Wallet.GetBalanceString(context.Background(), cid, nil)
+		if err != nil {
+			b.WriteString(fmt.Sprintf("Chain %d: error %v\n", cid, err))
+			continue
+		}
+		if chainID == 0 {
+			b.WriteString(fmt.Sprintf("Chain %d:\n", cid))
+		}
+		b.WriteString(fmt.Sprintf("  Native: %s wei\n", nativeBal))
+		// ERC-20 from Alchemy
+		tb, err := t.Alchemy.GetTokenBalances(context.Background(), cid, addr, "erc20")
+		if err != nil {
+			b.WriteString(fmt.Sprintf("  ERC-20: error %v\n", err))
+			continue
+		}
+		for _, tkn := range tb.TokenBalances {
+			if tkn.Error != "" {
+				continue
+			}
+			if tkn.TokenBalance == "" || tkn.TokenBalance == "0x0" || tkn.TokenBalance == "0" {
+				if !includeZero {
+					continue
+				}
+			}
+			meta, _ := t.Alchemy.GetTokenMetadata(context.Background(), cid, tkn.ContractAddress)
+			symbol := "?"
+			decimals := 18
+			if meta != nil {
+				symbol = meta.Symbol
+				decimals = meta.Decimals
+			}
+			raw := tkn.TokenBalance
+			if raw == "" || raw == "0x0" {
+				raw = "0"
+			}
+			b.WriteString(fmt.Sprintf("  %s (%s): %s (decimals %d)\n", symbol, tkn.ContractAddress, raw, decimals))
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (t *Tools) walletGetPortfolioValue(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Alchemy == nil || t.Wallet == nil {
+		return "Portfolio tools require Alchemy (ALCHEMY_API_KEY or ALCHEMY_BASE_URL) and wallet. Set both to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	includeZero := false
+	if rawArgs != nil {
+		if v, ok := rawArgs["include_zero"].(bool); ok {
+			includeZero = v
+		}
+	}
+	chainIDs := t.Wallet.ChainIDs()
+	if chainID > 0 {
+		chainIDs = []int64{chainID}
+	}
+	if len(chainIDs) == 0 {
+		chainIDs = []int64{t.Wallet.DefaultChainID()}
+	}
+	var b strings.Builder
+	addr := t.Wallet.WalletAddress()
+	totalUSD := 0.0
+	for _, cid := range chainIDs {
+		b.WriteString(fmt.Sprintf("Chain %d:\n", cid))
+		// Native balance
+		nativeBal, err := t.Wallet.GetBalanceString(context.Background(), cid, nil)
+		if err != nil {
+			b.WriteString(fmt.Sprintf("  Native: error %v\n", err))
+			continue
+		}
+		nativeWei, _ := new(big.Int).SetString(nativeBal, 10)
+		ethPrice, _ := t.Alchemy.GetTokenPrice(context.Background(), cid, "0x0000000000000000000000000000000000000000")
+		if ethPrice > 0 {
+			ethVal := new(big.Float).SetInt(nativeWei)
+			ethVal.Quo(ethVal, big.NewFloat(1e18))
+			ethVal.Mul(ethVal, big.NewFloat(ethPrice))
+			f, _ := ethVal.Float64()
+			totalUSD += f
+			b.WriteString(fmt.Sprintf("  Native: %s wei ≈ $%.2f\n", nativeBal, f))
+		} else {
+			b.WriteString(fmt.Sprintf("  Native: %s wei\n", nativeBal))
+		}
+		// ERC-20
+		tb, err := t.Alchemy.GetTokenBalances(context.Background(), cid, addr, "erc20")
+		if err != nil {
+			b.WriteString(fmt.Sprintf("  ERC-20: error %v\n", err))
+			continue
+		}
+		for _, tkn := range tb.TokenBalances {
+			if tkn.Error != "" {
+				continue
+			}
+			raw := tkn.TokenBalance
+			if raw == "" || raw == "0x0" {
+				raw = "0"
+			}
+			balWei, ok := new(big.Int).SetString(strings.TrimPrefix(raw, "0x"), 16)
+			if !ok {
+				balWei, _ = new(big.Int).SetString(raw, 10)
+			}
+			if balWei.Sign() == 0 && !includeZero {
+				continue
+			}
+			meta, _ := t.Alchemy.GetTokenMetadata(context.Background(), cid, tkn.ContractAddress)
+			symbol := "?"
+			decimals := 18
+			if meta != nil {
+				symbol = meta.Symbol
+				decimals = meta.Decimals
+			}
+			price, _ := t.Alchemy.GetTokenPrice(context.Background(), cid, tkn.ContractAddress)
+			// Fallback: known stablecoins often lack price data on some chains; assume $1
+			if price == 0 && isStablecoin(symbol) {
+				price = 1.0
+			}
+			human := new(big.Float).SetInt(balWei)
+			human.Quo(human, big.NewFloat(float64(pow10(decimals))))
+			humanF, _ := human.Float64()
+			valUSD := humanF * price
+			if price > 0 {
+				totalUSD += valUSD
+				b.WriteString(fmt.Sprintf("  %s: %.4f ≈ $%.2f\n", symbol, humanF, valUSD))
+			} else {
+				b.WriteString(fmt.Sprintf("  %s: %.4f (no price)\n", symbol, humanF))
+			}
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(fmt.Sprintf("Total ≈ $%.2f\n", totalUSD))
+	return strings.TrimSpace(b.String()), nil
+}
+
+func pow10(n int) int64 {
+	if n <= 0 {
+		return 1
+	}
+	x := int64(1)
+	for i := 0; i < n; i++ {
+		x *= 10
+	}
+	return x
+}
+
+// isStablecoin returns true for common USD-pegged tokens (used when GetTokenPrice returns 0).
+func isStablecoin(symbol string) bool {
+	s := strings.ToUpper(strings.TrimSpace(symbol))
+	return s == "USDC" || s == "USDT" || s == "DAI" || s == "BUSD" || s == "FRAX" || s == "TUSD"
+}
+
+func (t *Tools) walletGetActivity(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Alchemy == nil || t.Wallet == nil {
+		return "Activity tools require Alchemy and wallet. Set both to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	if chainID == 0 {
+		chainID = t.Wallet.DefaultChainID()
+	}
+	limit := 20
+	if rawArgs != nil {
+		if v, ok := rawArgs["limit"].(float64); ok && v > 0 && v <= 100 {
+			limit = int(v)
+		}
+	}
+	addr := t.Wallet.WalletAddress()
+	// "internal" category is only supported for ETH (1) and Polygon (137); omit for other chains
+	categories := []string{"external", "erc20"}
+	if chainID == 1 || chainID == 137 {
+		categories = append(categories, "internal")
+	}
+	// Fetch incoming (toAddress) and outgoing (fromAddress); merge
+	resIn, err := t.Alchemy.GetAssetTransfers(context.Background(), chainID, "", addr, categories, limit, "")
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	resOut, err := t.Alchemy.GetAssetTransfers(context.Background(), chainID, addr, "", categories, limit, "")
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	seen := make(map[string]bool)
+	var transfers []alchemy.AssetTransfer
+	for _, tr := range resIn.Transfers {
+		if !seen[tr.Hash] {
+			seen[tr.Hash] = true
+			transfers = append(transfers, tr)
+		}
+	}
+	for _, tr := range resOut.Transfers {
+		if !seen[tr.Hash] {
+			seen[tr.Hash] = true
+			transfers = append(transfers, tr)
+		}
+	}
+	if len(transfers) == 0 {
+		return "No transfers found.", nil
+	}
+	var b strings.Builder
+	for _, tr := range transfers {
+		ts := ""
+		if tr.Metadata != nil && tr.Metadata.BlockTimestamp != "" {
+			ts = " " + tr.Metadata.BlockTimestamp
+		}
+		b.WriteString(fmt.Sprintf("[%s] %s %s → %s value=%s asset=%s%s\n",
+			tr.Category, tr.Hash, tr.From, tr.To, tr.Value, tr.Asset, ts))
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (t *Tools) walletSimulateTransaction(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Alchemy == nil || t.Wallet == nil {
+		return "Simulation requires Alchemy and wallet. Set both to enable.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	if chainID == 0 {
+		chainID = t.Wallet.DefaultChainID()
+	}
+	to := args["to"]
+	data := args["data"]
+	valueWei := args["value_wei"]
+	if valueWei == "" {
+		valueWei = "0"
+	}
+	from := t.Wallet.WalletAddress()
+	res, err := t.Alchemy.SimulateAssetChanges(context.Background(), chainID, from, to, data, valueWei)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	if len(res.Changes) == 0 {
+		return "Simulation succeeded. No asset changes.", nil
+	}
+	var b strings.Builder
+	b.WriteString("Simulation succeeded. Asset changes:\n")
+	for _, c := range res.Changes {
+		b.WriteString(fmt.Sprintf("  %s %s: %s → %s raw=%s\n", c.AssetType, c.ChangeType, c.From, c.To, c.RawAmount))
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 func (t *Tools) listSkills() (string, error) {
@@ -953,7 +1315,7 @@ func (t *Tools) deleteReminder(args map[string]string) (string, error) {
 }
 
 const (
-	httpRequestMaxBody   = 64 * 1024 // 64KB
+	httpRequestMaxBody  = 64 * 1024 // 64KB
 	httpRequestTimeout  = 30 * time.Second
 	httpRequestRedactHd = "authorization,cookie,x-api-key,x-auth-token"
 )
@@ -1060,6 +1422,29 @@ func (t *Tools) httpRequest(args map[string]string, rawArgs map[string]interface
 		out.WriteString("\n\nNote: 402 Payment Required. Configure wallet (EVM_RPC_URL, WALLET_PRIVATE_KEY) for x402 to pay automatically.")
 	}
 	return out.String(), nil
+}
+
+func (t *Tools) x402GetStats() (string, error) {
+	if t.X402Client == nil || t.X402RouterURL == "" {
+		return "x402_get_stats requires autonomous mode with x402 router configured (X402_ROUTER_URL).", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	stats, err := t.X402Client.FetchRouterStats(ctx, t.X402RouterURL)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	capUSD := 0.0
+	if t.X402PermitCap != "" {
+		capUSD, _ = strconv.ParseFloat(t.X402PermitCap, 64)
+	}
+	spentUSD, _ := strconv.ParseFloat(stats.TotalSpentUSD, 64)
+	remaining := capUSD - spentUSD
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Sprintf("total_spent_usd=%s total_tokens=%d permit_cap_usd=%s remaining_usd≈%.2f",
+		stats.TotalSpentUSD, stats.TotalTokens, t.X402PermitCap, remaining), nil
 }
 
 func runCommand(command string) (string, error) {
