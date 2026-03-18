@@ -134,3 +134,25 @@ func TestRegistry_MonadExplorer(t *testing.T) {
 		t.Errorf("Monad explorer URL = %q, want https://monadscan.com/tx/0xabc123def456", url)
 	}
 }
+
+func TestRegistry_ChainURLs(t *testing.T) {
+	json := `[
+		{"chain_id":1,"rpc_url":"https://eth-mainnet.g.alchemy.com/v2/key1","explorer":"https://etherscan.io","name":"Ethereum"},
+		{"chain_id":137,"rpc_url":"https://polygon-rpc.com","explorer":"https://polygonscan.com","name":"Polygon"}
+	]`
+	r, err := BuildFromConfig(json, "", 0, 0)
+	if err != nil {
+		t.Fatalf("BuildFromConfig err = %v", err)
+	}
+	urls := r.ChainURLs("alchemy.com")
+	if len(urls) != 1 {
+		t.Errorf("ChainURLs(alchemy.com) len = %d, want 1", len(urls))
+	}
+	if u, ok := urls[1]; !ok || u != "https://eth-mainnet.g.alchemy.com/v2/key1" {
+		t.Errorf("ChainURLs(alchemy.com)[1] = %q", urls[1])
+	}
+	all := r.ChainURLs("")
+	if len(all) != 2 {
+		t.Errorf("ChainURLs(empty) len = %d, want 2", len(all))
+	}
+}

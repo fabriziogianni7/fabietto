@@ -94,6 +94,11 @@ func (s *Service) DefaultChainID() int64 {
 	return s.chainRegistry.DefaultChainID()
 }
 
+// ChainIDs returns all configured chain IDs. Implements tools.WalletService.
+func (s *Service) ChainIDs() []int64 {
+	return s.chainRegistry.ChainIDs()
+}
+
 // GetBalance returns the native token balance at the given block (nil = latest).
 // chainID 0 = default chain.
 func (s *Service) GetBalance(ctx context.Context, chainID int64, block *big.Int) (*big.Int, error) {

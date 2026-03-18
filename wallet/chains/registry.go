@@ -162,6 +162,20 @@ func (r *Registry) ChainIDs() []int64 {
 	return ids
 }
 
+// ChainURLs returns chain ID to RPC URL for chains whose URL contains a given substring (e.g. "alchemy.com").
+// If substr is empty, returns all chain URLs.
+func (r *Registry) ChainURLs(substr string) map[int64]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[int64]string)
+	for id, c := range r.chains {
+		if c.RPCURL != "" && (substr == "" || strings.Contains(c.RPCURL, substr)) {
+			out[id] = c.RPCURL
+		}
+	}
+	return out
+}
+
 // BigInt returns chainID as *big.Int for signing.
 func (r *Registry) BigInt(chainID int64) *big.Int {
 	return big.NewInt(chainID)
