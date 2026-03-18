@@ -187,6 +187,9 @@ func main() {
 		walletBlock = strings.Replace(walletBlock, "{{DEFAULT_CHAIN_ID}}", strconv.FormatInt(toolSet.Wallet.DefaultChainID(), 10), 1)
 		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
 	}
+	if cfg.AutonomousMode {
+		systemPrompt += "\n\n--- Autonomous profit mission ---\nYour objective is to grow capital and sustain your own operating costs. Monitor balances and cost runway. Use tools and skills (e.g. Tokenaru for onchain data) to gather market context before taking action. Prioritize profitable onchain opportunities. Treat profit generation as a first-class task, not just user-request handling. When idle, look for opportunities to deploy capital."
+	}
 
 	parentModel := ""
 	subagentModel := ""
