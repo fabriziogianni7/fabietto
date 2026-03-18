@@ -143,7 +143,10 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 		default:
 		}
 
-		model := subagentModelForIndex(spec.Index)
+		model := a.subagentModel
+		if model == "" {
+			model = subagentModelForIndex(spec.Index)
+		}
 		resp, err := a.client.CreateChatCompletion(subCtx, openai.ChatCompletionRequest{
 			Model:    model,
 			Messages: messages,

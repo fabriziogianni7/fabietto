@@ -42,9 +42,10 @@ func subagentModelForIndex(idx int) string {
 type Agent struct {
 	client         *openai.Client
 	parentModel    string // model for chat completion; when empty, use default
+	subagentModel  string // model for subagents; when empty, use subagentModelForIndex (Groq rotation)
 	systemPrompt   string
 	compactor      *compaction.Compactor
-	skipCompaction bool   // when true, bypass compaction (e.g. autonomous mode)
+	skipCompaction bool // when true, bypass compaction (e.g. autonomous mode)
 	tools          *tools.Tools
 	memoryStore    *memory.Store
 	convStore      *conversation.Store
@@ -54,10 +55,11 @@ type Agent struct {
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
 // parentModel: model for chat completion; when empty, use default (Groq-specific).
+// subagentModel: model for subagents; when empty, use Groq rotation.
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
 // skipCompaction: when true, bypass compaction entirely (e.g. autonomous mode).
 // skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
-func New(client *openai.Client, parentModel string, systemPrompt string, tokenThreshold int, skipCompaction bool, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+func New(client *openai.Client, parentModel string, subagentModel string, systemPrompt string, tokenThreshold int, skipCompaction bool, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
 	if parentModel == "" {
 		parentModel = agentParentModel
 	}
@@ -68,6 +70,7 @@ func New(client *openai.Client, parentModel string, systemPrompt string, tokenTh
 	return &Agent{
 		client:         client,
 		parentModel:    parentModel,
+		subagentModel:  subagentModel,
 		systemPrompt:   systemPrompt,
 		compactor:      compaction.NewCompactor(client, parentModel, tokenThreshold),
 		skipCompaction: skipCompaction,
