@@ -18,7 +18,7 @@ import (
 const (
 	defaultMaxConcurrency   = 4
 	defaultPerChildTimeout  = 20 * time.Second
-	defaultMaxChildCount     = 10
+	defaultMaxChildCount    = 10
 	subagentMaxToolRounds   = 5
 	subagentRoleInstruction = "You are a focused sub-agent. Answer only the given task. Use read_file, web_search, and read_memory as needed. Do not save memory or schedule reminders."
 )
@@ -147,11 +147,19 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 		if model == "" {
 			model = subagentModelForIndex(spec.Index)
 		}
-		resp, err := a.client.CreateChatCompletion(subCtx, openai.ChatCompletionRequest{
+		sendMessages := messages
+		if a.skipCompaction {
+			sendMessages = convertToMessagesAPIFormat(messages)
+		}
+		req := openai.ChatCompletionRequest{
 			Model:    model,
-			Messages: messages,
+			Messages: sendMessages,
 			Tools:    toolDefs,
-		})
+		}
+		if a.skipCompaction {
+			req.MaxTokens = 4096 // x402 router requires max_tokens
+		}
+		resp, err := a.client.CreateChatCompletion(subCtx, req)
 		if err != nil {
 			log.Printf("[subagents] child index=%d LLM error: %v", spec.Index, err)
 			return SubtaskResult{
@@ -258,7 +266,7 @@ func FormatSubagentResults(results []SubtaskResult) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-			b.WriteString("Task ")
+		b.WriteString("Task ")
 		b.WriteString(fmt.Sprintf("%d", i+1))
 		b.WriteString(": ")
 		b.WriteString(": ")

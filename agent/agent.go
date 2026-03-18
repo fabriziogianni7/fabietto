@@ -21,7 +21,7 @@ import (
 
 const (
 	agentParentModel = "moonshotai/kimi-k2-instruct-0905" // default when parentModel not specified
-	maxToolRounds   = 10
+	maxToolRounds    = 10
 )
 
 // subagentModels are rotated per sub-agent index to spread load across Groq's per-model TPM quotas.
@@ -220,11 +220,21 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	walletToolUsed := false
 
 	for i := 0; i < maxToolRounds; i++ {
-		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		sendMessages := messages
+		if a.skipCompaction {
+			// x402 router with model "auto" may route to Anthropic Messages API, which expects
+			// top-level "system" parameter, not system role in messages. Prepend system to first user message.
+			sendMessages = convertToMessagesAPIFormat(messages)
+		}
+		req := openai.ChatCompletionRequest{
 			Model:    a.parentModel,
-			Messages: messages,
+			Messages: sendMessages,
 			Tools:    toolDefs,
-		})
+		}
+		if a.skipCompaction {
+			req.MaxTokens = 4096 // x402 router requires max_tokens
+		}
+		resp, err := a.client.CreateChatCompletion(ctx, req)
 		if err != nil {
 			log.Printf("[agent] LLM error: %v", err)
 			return "Sorry, I couldn't process that. Please try again."
@@ -328,7 +338,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		}
 		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
 			messages = append(messages, openai.ChatCompletionMessage{
-				Role: openai.ChatMessageRoleSystem,
+				Role:    openai.ChatMessageRoleSystem,
 				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
 			})
 			continue
@@ -429,6 +439,36 @@ func (a *Agent) handleSpawnSubagents(ctx context.Context, argsJSON string, msg g
 		return "Error running sub-agents: " + err.Error()
 	}
 	return FormatSubagentResults(results)
+}
+
+// convertToMessagesAPIFormat removes system-role messages and prepends their content to the first
+// user message. The x402 router with model "auto" may route to Anthropic's Messages API, which
+// rejects "system" as a message role and expects system as a top-level parameter. Prepending
+// to the first user message is a compatible workaround.
+func convertToMessagesAPIFormat(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	var systemParts []string
+	var out []openai.ChatCompletionMessage
+	for _, m := range messages {
+		if m.Role == openai.ChatMessageRoleSystem {
+			if m.Content != "" {
+				systemParts = append(systemParts, m.Content)
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+	if len(systemParts) == 0 || len(out) == 0 {
+		return out
+	}
+	// Prepend system to first user message
+	systemBlock := strings.Join(systemParts, "\n\n")
+	for i := range out {
+		if out[i].Role == openai.ChatMessageRoleUser {
+			out[i].Content = systemBlock + "\n\n---\n\n" + out[i].Content
+			break
+		}
+	}
+	return out
 }
 
 // extractRememberContent returns content to save when user explicitly asks to remember something.
