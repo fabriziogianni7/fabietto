@@ -112,6 +112,8 @@ The agent loop runs until the LLM returns a final text response or hits the tool
 
 Edit `PERSONALITY.md` to define the bot's persona. Its contents are injected as the system prompt at startup. Change the tone, style, or add rules—the bot will adopt whatever you write.
 
+In **autonomous mode**, the bot uses `PERSONALITY_AUTONOMOUS.md` instead, which defines Fabietto as an autonomous profit-seeking agent focused on growing capital and sustaining its own operating costs.
+
 ---
 
 ## Gateways
@@ -196,8 +198,31 @@ When `AUTONOMOUS_MODE=1`, the agent pays for its own LLM inference via x402 inst
 | `AUTONOMOUS_MODE` | Set to `1`, `true`, or `yes` to enable |
 | `X402_ROUTER_URL` | Router base URL (default `https://ai.xgate.run/v1`) |
 | `X402_PERMIT_CAP` | Session spend cap in USDC (default `50`) |
+| `X402_MODEL` | Model for x402 router (default `openai:gpt-4`; use `auto` for router auto-selection) |
+| `X402_MIN_BASE_USDC` | Minimum USDC to keep on Base for inference (default `10`). Agent must not trade below this. |
+| `OPPORTUNITY_SCAN_INTERVAL_MINUTES` | Cron interval (default 0 = disabled; set e.g. 15 to enable) |
+| `TELEGRAM_OWNER_CHAT_ID` | Chat ID to receive scan output and approvals (routed via existing bot; required when interval > 0) |
 
-**Behavior:** LLM calls go through the x402 router with model `auto`. Compaction is disabled. The agent has an explicit mission to grow capital and sustain its own operating costs. Use Tokenaru (via `http_request`) for onchain data; use wallet tools for execution. Fail hard if wallet or router prerequisites are missing—no Groq fallback.
+**Requirements:** Autonomous mode requires Base (chain 8453) in `WALLET_CHAINS` or `CHAIN_ID=8453` (x402 uses USDC on Base), and Alchemy (`ALCHEMY_API_KEY` or Alchemy `EVM_RPC_URL`) for portfolio valuation and USDC runway checks.
+
+**Behavior:** LLM calls go through the x402 router with model `openai:gpt-4` by default (override via `X402_MODEL`; use `auto` for router auto-selection). Compaction is disabled. The agent has an explicit mission to grow capital and sustain its own operating costs. Use Tokenaru (via `http_request`) for onchain data; use wallet tools for execution. Fail hard if wallet or router prerequisites are missing—no Groq fallback.
+
+**Accounting & runway:** The agent uses `x402_get_stats` to see session spend (total_spent_usd, total_tokens, remaining_usd) and `wallet_get_portfolio_value` on Base (chain 8453) to verify USDC balance. It reserves the configured `X402_MIN_BASE_USDC` and must not trade below it. Runway and spend snapshots are persisted via `save_memory`.
+
+**Opportunity scan:** When `OPPORTUNITY_SCAN_INTERVAL_MINUTES` > 0, a cron periodically sends a synthetic message to the agent: scan market data, check balance, and decide if there are profitable actions. The agent's reply and any wallet approval requests are sent to `TELEGRAM_OWNER_CHAT_ID` via the existing Telegram bot.
+
+---
+
+## Alchemy portfolio tools
+
+When `ALCHEMY_API_KEY` (or `ALCHEMY_BASE_URL`, or an Alchemy `EVM_RPC_URL`) is set and the wallet is enabled, the agent gets additional portfolio and market data tools:
+
+| Env var | Description |
+|---------|-------------|
+| `ALCHEMY_API_KEY` | API key from [Alchemy Dashboard](https://dashboard.alchemy.com); URLs derived per chain |
+| `ALCHEMY_BASE_URL` | Optional override; e.g. `https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY` for single chain |
+
+**Tools:** `wallet_get_portfolio`, `wallet_get_portfolio_value`, `wallet_get_activity`, `wallet_simulate_transaction`. Uses Alchemy Token API, Prices API, Transfers API, and Simulation API.
 
 ---
 
@@ -295,6 +320,7 @@ custom-agent/
 ├── go.mod
 ├── main.go
 ├── PERSONALITY.md         # bot persona (system prompt)
+├── PERSONALITY_AUTONOMOUS.md  # autonomous-mode persona (profit-seeking agent)
 ├── WALLET.md              # wallet tool instructions (injected when wallet enabled)
 └── README.md
 ```
