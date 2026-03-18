@@ -14,6 +14,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
 - [Wallet](#wallet)
+- [Autonomous profit mode](#autonomous-profit-mode)
 - [Skills](#skills)
 - [Contributing](#contributing)
 - [Project structure](#project-structure)
@@ -183,6 +184,20 @@ Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or sig
 See `WALLET.md` for tool usage. Transactions above the spend limit trigger a notification; the user must reply `approve: tx_<id>` to execute.
 
 **x402 buyer:** When the wallet is enabled (env backend), the `http_request` tool can automatically pay for APIs that return 402 Payment Required. The agent uses the same wallet to sign x402 payment payloads.
+
+---
+
+## Autonomous profit mode
+
+When `AUTONOMOUS_MODE=1`, the agent pays for its own LLM inference via x402 instead of Groq. Wallet is required; `GROQ_API_KEY` is not.
+
+| Env var | Description |
+|---------|-------------|
+| `AUTONOMOUS_MODE` | Set to `1`, `true`, or `yes` to enable |
+| `X402_ROUTER_URL` | Router base URL (default `https://ai.xgate.run/v1`) |
+| `X402_PERMIT_CAP` | Session spend cap in USDC (default `50`) |
+
+**Behavior:** LLM calls go through the x402 router with model `auto`. Compaction is disabled. The agent has an explicit mission to grow capital and sustain its own operating costs. Use Tokenaru (via `http_request`) for onchain data; use wallet tools for execution. Fail hard if wallet or router prerequisites are missing—no Groq fallback.
 
 ---
 
