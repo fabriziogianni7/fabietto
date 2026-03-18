@@ -21,4 +21,5 @@ reminders/reminders.jsonl
 # Wallet
 wallet-approvals/
 wallet-history/
-.cursor/rules/github-issues.mdc
+.cursor/*
+.DS_Store
