@@ -1,0 +1,448 @@
+{
+    "data": [
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-11-24T00:00:00+00:00",
+        "display_name": "Claude Opus 4.5 (latest)",
+        "id": "claude-opus-4-5",
+        "max_tokens": 64000,
+        "metadata": {
+          "last_updated": "2025-11-24T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.5",
+          "cache_write_per_1m": "6.25",
+          "input_per_1m": "5",
+          "output_per_1m": "25"
+        },
+        "provider": "anthropic"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2026-02-10T00:00:00+00:00",
+        "display_name": "Claude Opus 4.6 (latest)",
+        "id": "claude-opus-4-6",
+        "max_tokens": 64000,
+        "metadata": {
+          "last_updated": "2026-02-10T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.5",
+          "cache_write_per_1m": "6.25",
+          "input_per_1m": "5",
+          "output_per_1m": "25"
+        },
+        "provider": "anthropic"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2026-02-17T00:00:00+00:00",
+        "display_name": "Claude Sonnet 4.6 (latest)",
+        "id": "claude-sonnet-4-6",
+        "max_tokens": 64000,
+        "metadata": {
+          "last_updated": "2026-02-17T00:00:00+00:00",
+          "source": "manual"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.3",
+          "cache_write_per_1m": "3.75",
+          "input_per_1m": "3",
+          "output_per_1m": "15"
+        },
+        "provider": "anthropic"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": false,
+          "supports_prompt_caching": false,
+          "supports_streaming": false,
+          "supports_vision": true
+        },
+        "created_at": "2026-02-13T03:19:50.131287+00:00",
+        "display_name": "Flux 2 Flex",
+        "id": "fal-ai/flux-2-flex",
+        "metadata": {
+          "last_updated": "2026-02-13T03:19:50.131287+00:00",
+          "source": "fal_api"
+        },
+        "pricing": { "input_per_1m": "0.05", "output_per_1m": "0" },
+        "provider": "fal"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": false,
+          "supports_prompt_caching": false,
+          "supports_streaming": false,
+          "supports_vision": true
+        },
+        "created_at": "2026-02-13T03:19:50.131281+00:00",
+        "display_name": "Flux 2 Flex",
+        "id": "fal-ai/flux-2-flex/edit",
+        "metadata": {
+          "last_updated": "2026-02-13T03:19:50.131281+00:00",
+          "source": "fal_api"
+        },
+        "pricing": { "input_per_1m": "0.05", "output_per_1m": "0" },
+        "provider": "fal"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": false,
+          "supports_prompt_caching": false,
+          "supports_streaming": false,
+          "supports_vision": true
+        },
+        "created_at": "2026-02-13T03:19:50.128904+00:00",
+        "display_name": "Flux 2 Pro",
+        "id": "fal-ai/flux-2-pro",
+        "metadata": {
+          "last_updated": "2026-02-13T03:19:50.128904+00:00",
+          "source": "fal_api"
+        },
+        "pricing": { "input_per_1m": "0.03", "output_per_1m": "0" },
+        "provider": "fal"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": false,
+          "supports_prompt_caching": false,
+          "supports_streaming": false,
+          "supports_vision": true
+        },
+        "created_at": "2026-02-13T03:19:50.129495+00:00",
+        "display_name": "Kling O3 Reference to Video [Standard]",
+        "id": "fal-ai/kling-video/o3/standard/reference-to-video",
+        "metadata": {
+          "last_updated": "2026-02-13T03:19:50.129495+00:00",
+          "source": "fal_api"
+        },
+        "pricing": { "input_per_1m": "0.28", "output_per_1m": "0" },
+        "provider": "fal"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 262144,
+        "created_at": "2026-01-28T02:51:45.407738+00:00",
+        "display_name": "Kimi K2.5",
+        "id": "kimi-k2.5",
+        "metadata": {
+          "last_updated": "2026-01-28T02:51:45.407738+00:00",
+          "source": "manual"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.10",
+          "input_per_1m": "0.60",
+          "output_per_1m": "3.00"
+        },
+        "provider": "moonshot"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2025-08-07T00:00:00+00:00",
+        "display_name": "GPT-5",
+        "id": "gpt-5",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2025-08-07T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.125",
+          "input_per_1m": "1.25",
+          "output_per_1m": "10"
+        },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2025-08-07T00:00:00+00:00",
+        "display_name": "GPT-5 Mini",
+        "id": "gpt-5-mini",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2025-08-07T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.025",
+          "input_per_1m": "0.25",
+          "output_per_1m": "2"
+        },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2025-08-07T00:00:00+00:00",
+        "display_name": "GPT-5 Nano",
+        "id": "gpt-5-nano",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2025-08-07T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.005",
+          "input_per_1m": "0.05",
+          "output_per_1m": "0.4"
+        },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": false,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2025-10-06T00:00:00+00:00",
+        "display_name": "GPT-5 Pro",
+        "id": "gpt-5-pro",
+        "max_tokens": 272000,
+        "metadata": {
+          "last_updated": "2025-10-06T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": { "input_per_1m": "15", "output_per_1m": "120" },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2025-12-11T00:00:00+00:00",
+        "display_name": "GPT-5.2 Codex",
+        "id": "gpt-5.2-codex",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2025-12-11T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.175",
+          "input_per_1m": "1.75",
+          "output_per_1m": "14"
+        },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 400000,
+        "created_at": "2026-02-10T00:00:00+00:00",
+        "display_name": "GPT-5.3 Codex",
+        "id": "gpt-5.3-codex",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2026-02-10T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.175",
+          "input_per_1m": "1.75",
+          "output_per_1m": "14"
+        },
+        "provider": "openai"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2024-10-22T00:00:00+00:00",
+        "display_name": "Claude Haiku 3.5",
+        "id": "anthropic/claude-3.5-haiku",
+        "max_tokens": 8192,
+        "metadata": {
+          "last_updated": "2024-10-22T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.08",
+          "cache_write_per_1m": "1",
+          "input_per_1m": "0.8",
+          "output_per_1m": "4"
+        },
+        "provider": "openrouter"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-02-19T00:00:00+00:00",
+        "display_name": "Claude Sonnet 3.7",
+        "id": "anthropic/claude-3.7-sonnet",
+        "max_tokens": 128000,
+        "metadata": {
+          "last_updated": "2025-02-19T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "1.5",
+          "cache_write_per_1m": "18.75",
+          "input_per_1m": "15",
+          "output_per_1m": "75"
+        },
+        "provider": "openrouter"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-10-15T00:00:00+00:00",
+        "display_name": "Claude Haiku 4.5",
+        "id": "anthropic/claude-haiku-4.5",
+        "max_tokens": 64000,
+        "metadata": {
+          "last_updated": "2025-10-15T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.1",
+          "cache_write_per_1m": "1.25",
+          "input_per_1m": "1",
+          "output_per_1m": "5"
+        },
+        "provider": "openrouter"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-05-22T00:00:00+00:00",
+        "display_name": "Claude Opus 4",
+        "id": "anthropic/claude-opus-4",
+        "max_tokens": 32000,
+        "metadata": {
+          "last_updated": "2025-05-22T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "1.5",
+          "cache_write_per_1m": "18.75",
+          "input_per_1m": "15",
+          "output_per_1m": "75"
+        },
+        "provider": "openrouter"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-08-05T00:00:00+00:00",
+        "display_name": "Claude Opus 4.1",
+        "id": "anthropic/claude-opus-4.1",
+        "max_tokens": 32000,
+        "metadata": {
+          "last_updated": "2025-08-05T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "1.5",
+          "cache_write_per_1m": "18.75",
+          "input_per_1m": "15",
+          "output_per_1m": "75"
+        },
+        "provider": "openrouter"
+      },
+      {
+        "capabilities": {
+          "supports_function_calling": true,
+          "supports_prompt_caching": true,
+          "supports_streaming": true,
+          "supports_vision": true
+        },
+        "context_length": 200000,
+        "created_at": "2025-11-24T00:00:00+00:00",
+        "display_name": "Claude Opus 4.5",
+        "id": "anthropic/claude-opus-4.5",
+        "max_tokens": 32000,
+        "metadata": {
+          "last_updated": "2025-11-24T00:00:00+00:00",
+          "source": "modelsdev"
+        },
+        "pricing": {
+          "cache_read_per_1m": "0.5",
+          "cache_write_per_1m": "6.25",
+          "input_per_1m": "5",
+          "output_per_1m": "25"
+        },
+        "provider": "openrouter"
+      }
+    ],
+    "first_id": "anthropic::claude-opus-4-5",
+    "has_more": true,
+    "last_id": "openrouter::anthropic/claude-opus-4.5"
+  }
+  
