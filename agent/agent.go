@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	parentModel   = "moonshotai/kimi-k2-instruct-0905"
-	maxToolRounds = 10
+	agentParentModel = "moonshotai/kimi-k2-instruct-0905" // default when parentModel not specified
+	maxToolRounds   = 10
 )
 
 // subagentModels are rotated per sub-agent index to spread load across Groq's per-model TPM quotas.
@@ -41,6 +41,7 @@ func subagentModelForIndex(idx int) string {
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
 	client       *openai.Client
+	parentModel  string // model for chat completion; when empty, use default
 	systemPrompt string
 	compactor    *compaction.Compactor
 	tools        *tools.Tools
@@ -51,15 +52,20 @@ type Agent struct {
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
+// parentModel: model for chat completion; when empty, use default (Groq-specific).
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
 // skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
-func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+func New(client *openai.Client, parentModel string, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+	if parentModel == "" {
+		parentModel = agentParentModel
+	}
 	var skillsMgr *skills.Manager
 	if skillsDir != "" {
 		skillsMgr = skills.NewManager(skillsDir)
 	}
 	return &Agent{
 		client:       client,
+		parentModel:  parentModel,
 		systemPrompt: systemPrompt,
 		compactor:    compaction.NewCompactor(client, parentModel, tokenThreshold),
 		tools:        toolSet,
@@ -203,7 +209,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 
 	for i := 0; i < maxToolRounds; i++ {
 		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:    parentModel,
+			Model:    a.parentModel,
 			Messages: messages,
 			Tools:    toolDefs,
 		})

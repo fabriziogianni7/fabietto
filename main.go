@@ -52,9 +52,38 @@ func main() {
 	}
 	toolInstruction += "\n"
 
-	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
-	llmConfig.BaseURL = "https://api.groq.com/openai/v1"
-	llm := openai.NewClientWithConfig(llmConfig)
+	// Build x402 client early when autonomous (needed for LLM) or wallet-enabled (for http_request)
+	var x402Client *x402client.Client
+	if cfg.WalletEnabled() && (cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env") {
+		if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
+			var errX402 error
+			x402Client, errX402 = x402client.New(pk)
+			if errX402 != nil {
+				if cfg.AutonomousMode {
+					log.Fatalf("[x402] autonomous mode requires x402 client: %v", errX402)
+				}
+				log.Printf("[x402] signer init failed (http_request will use plain client): %v", errX402)
+			} else if cfg.AutonomousMode || cfg.WalletEnabled() {
+				log.Printf("[x402] buyer enabled for http_request")
+			}
+		}
+	}
+	// LLM client: autonomous mode uses x402 router; else Groq
+	var llm *openai.Client
+	if cfg.AutonomousMode {
+		if x402Client == nil {
+			log.Fatal("[autonomous] x402 client required for LLM; ensure wallet is configured")
+		}
+		llmConfig := openai.DefaultConfig("x402") // auth via payment, not API key
+		llmConfig.BaseURL = cfg.X402RouterURL
+		llmConfig.HTTPClient = x402Client.Client
+		llm = openai.NewClientWithConfig(llmConfig)
+		log.Printf("[autonomous] LLM via x402 router %s", cfg.X402RouterURL)
+	} else {
+		llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
+		llmConfig.BaseURL = "https://api.groq.com/openai/v1"
+		llm = openai.NewClientWithConfig(llmConfig)
+	}
 
 	// Optional: embedding client for memory and compaction (lazy - only used when needed)
 	var memoryStore *memory.Store
@@ -79,6 +108,9 @@ func main() {
 	reminderStore := reminders.NewStore()
 
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
+	if x402Client != nil {
+		toolSet.SetX402Client(x402Client)
+	}
 	if cfg.SkillsDir != "" {
 		sm := skills.NewManager(cfg.SkillsDir)
 		toolSet.SetSkills(sm)
@@ -122,20 +154,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("wallet signer: %v", err)
 		}
-		// Create x402 client from private key before unsetting env (env backend only)
-		var x402Client *x402client.Client
-		if cfg.WalletSignerBackend == "" || cfg.WalletSignerBackend == "env" {
-			if pk := os.Getenv(cfg.WalletPrivateKeyEnv); pk != "" {
-				x402Client, err = x402client.New(pk)
-				if err != nil {
-					log.Printf("[x402] signer init failed (http_request will use plain client): %v", err)
-				} else {
-					toolSet.SetX402Client(x402Client)
-					log.Printf("[x402] buyer enabled for http_request")
-				}
-			}
-		}
 		signer.UnsetEnvKey(cfg.WalletPrivateKeyEnv)
+		// x402 client created earlier (before LLM) for autonomous mode or http_request
 		policyCfg := policy.DefaultConfig()
 		if cfg.WalletNativeSpendLimit != "" {
 			if n, ok := new(big.Int).SetString(cfg.WalletNativeSpendLimit, 10); ok {
@@ -168,7 +188,11 @@ func main() {
 		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
 	}
 
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir)
+	parentModel := ""
+	if cfg.AutonomousMode {
+		parentModel = "auto"
+	}
+	a := agent.New(llm, parentModel, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir)
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)
