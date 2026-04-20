@@ -73,9 +73,9 @@ func (g *TelegramGateway) Run(ctx context.Context, handler Handler) error {
 
 			incoming := IncomingMessage{
 				Platform:  "telegram",
-				UserID:   fmt.Sprintf("%d", msg.From.ID),
-				ChatID:   fmt.Sprintf("%d", msg.Chat.ID),
-				Text:     msg.Text,
+				UserID:    fmt.Sprintf("%d", msg.From.ID),
+				ChatID:    fmt.Sprintf("%d", msg.Chat.ID),
+				Text:      msg.Text,
 				ReplyToID: fmt.Sprintf("%d", msg.MessageID),
 			}
 

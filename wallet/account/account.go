@@ -10,7 +10,7 @@ import (
 // Action represents a normalized execution intent (transfer or contract call).
 // Policy and approval flow operate on Actions, so they work for both EOA and ERC-4337.
 type Action struct {
-	Type       string         // "transfer" | "contract_call"
+	Type       string // "transfer" | "contract_call"
 	To         common.Address
 	Value      *big.Int
 	Data       []byte

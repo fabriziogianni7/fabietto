@@ -18,7 +18,7 @@ import (
 const (
 	defaultMaxConcurrency   = 4
 	defaultPerChildTimeout  = 20 * time.Second
-	defaultMaxChildCount     = 10
+	defaultMaxChildCount    = 10
 	subagentMaxToolRounds   = 5
 	subagentRoleInstruction = "You are a focused sub-agent. Answer only the given task. Use read_file, web_search, and read_memory as needed. Do not save memory or schedule reminders."
 )
@@ -255,7 +255,7 @@ func FormatSubagentResults(results []SubtaskResult) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-			b.WriteString("Task ")
+		b.WriteString("Task ")
 		b.WriteString(fmt.Sprintf("%d", i+1))
 		b.WriteString(": ")
 		b.WriteString(": ")

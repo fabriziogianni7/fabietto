@@ -310,7 +310,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		}
 		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
 			messages = append(messages, openai.ChatCompletionMessage{
-				Role: openai.ChatMessageRoleSystem,
+				Role:    openai.ChatMessageRoleSystem,
 				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
 			})
 			continue

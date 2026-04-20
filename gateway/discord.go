@@ -59,9 +59,9 @@ func (g *DiscordGateway) Run(ctx context.Context, handler Handler) error {
 
 		incoming := IncomingMessage{
 			Platform:  "discord",
-			UserID:   m.Author.ID,
-			ChatID:   m.ChannelID,
-			Text:     strings.TrimSpace(m.Content),
+			UserID:    m.Author.ID,
+			ChatID:    m.ChannelID,
+			Text:      strings.TrimSpace(m.Content),
 			ReplyToID: m.ID,
 		}
 

@@ -47,8 +47,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		NativeSpendLimitWei:    big.NewInt(0),
-		TokenSpendLimitWei:    big.NewInt(0),
-		BlockedMethods:        []string{"approve", "increaseAllowance", "permit"},
+		TokenSpendLimitWei:     big.NewInt(0),
+		BlockedMethods:         []string{"approve", "increaseAllowance", "permit"},
 		RequireApprovalMethods: []string{"transfer", "transferFrom", "mint", "burn"},
 	}
 }

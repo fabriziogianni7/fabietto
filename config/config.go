@@ -35,25 +35,25 @@ func parseInt64(s string, defaultVal int64) int64 {
 
 // Config holds validated application configuration.
 type Config struct {
-	TelegramBotToken     string
-	GroqAPIKey           string
-	BraveSearchAPIKey    string
-	DiscordToken         string // optional
-	HTTPPort             string // optional, e.g. "5000"
-	SignalCliURL         string // optional, signal-cli-rest-api URL
-	SignalNumber         string // optional, bot's Signal number
-	CompactionThreshold  int    // optional, token count to trigger compaction (default 4000)
-	OllamaURL            string // optional, e.g. "http://localhost:11434" for embeddings
-	OllamaEmbedModel     string // optional, e.g. "nomic-embed-text" (default)
+	TelegramBotToken    string
+	GroqAPIKey          string
+	BraveSearchAPIKey   string
+	DiscordToken        string // optional
+	HTTPPort            string // optional, e.g. "5000"
+	SignalCliURL        string // optional, signal-cli-rest-api URL
+	SignalNumber        string // optional, bot's Signal number
+	CompactionThreshold int    // optional, token count to trigger compaction (default 4000)
+	OllamaURL           string // optional, e.g. "http://localhost:11434" for embeddings
+	OllamaEmbedModel    string // optional, e.g. "nomic-embed-text" (default)
 
 	// Wallet (optional). If EVM_RPC_URL and signer are set, wallet tools are enabled.
-	EVM_RPC_URL          string // e.g. "https://eth-mainnet.g.alchemy.com/v2/..."
-	ChainID              int64  // e.g. 1 for mainnet (used when WALLET_CHAINS not set)
-	WalletSignerBackend  string // "env" | "kms" | "hsm" (default: env)
-	WalletPrivateKeyEnv  string // env var name for key (default: WALLET_PRIVATE_KEY)
-	WalletAccountMode    string // "eoa" | "smart" (default: eoa)
+	EVM_RPC_URL            string // e.g. "https://eth-mainnet.g.alchemy.com/v2/..."
+	ChainID                int64  // e.g. 1 for mainnet (used when WALLET_CHAINS not set)
+	WalletSignerBackend    string // "env" | "kms" | "hsm" (default: env)
+	WalletPrivateKeyEnv    string // env var name for key (default: WALLET_PRIVATE_KEY)
+	WalletAccountMode      string // "eoa" | "smart" (default: eoa)
 	WalletNativeSpendLimit string // wei string for auto-allow threshold, "0" = require approval for all
-	WalletApprovalDir    string // dir for approval persistence (optional)
+	WalletApprovalDir      string // dir for approval persistence (optional)
 
 	// Multichain: JSON array of {chain_id, rpc_url, explorer, name}. If empty, use EVM_RPC_URL+CHAIN_ID.
 	WalletChainsJSON     string // e.g. [{"chain_id":1,"rpc_url":"...","explorer":"https://etherscan.io","name":"Ethereum"}]
@@ -77,19 +77,19 @@ func Load() (*Config, error) {
 		SignalCliURL:        strings.TrimSpace(os.Getenv("SIGNAL_CLI_URL")),
 		SignalNumber:        strings.TrimSpace(os.Getenv("SIGNAL_NUMBER")),
 		CompactionThreshold: parseInt(os.Getenv("CONTEXT_COMPACTION_THRESHOLD"), 4000),
-		OllamaURL:        strings.TrimSpace(os.Getenv("OLLAMA_URL")),
-		OllamaEmbedModel: strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
+		OllamaURL:           strings.TrimSpace(os.Getenv("OLLAMA_URL")),
+		OllamaEmbedModel:    strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
 
-		EVM_RPC_URL:         strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
-		ChainID:             parseInt64(os.Getenv("CHAIN_ID"), 1),
-		WalletSignerBackend: strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
-		WalletPrivateKeyEnv: strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
-		WalletAccountMode:   strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
+		EVM_RPC_URL:            strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
+		ChainID:                parseInt64(os.Getenv("CHAIN_ID"), 1),
+		WalletSignerBackend:    strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
+		WalletPrivateKeyEnv:    strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
+		WalletAccountMode:      strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
 		WalletNativeSpendLimit: strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
-		WalletApprovalDir:   strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
-		WalletChainsJSON:    strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
-		WalletDefaultChainID: parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
-		SkillsDir:           strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+		WalletApprovalDir:      strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
+		WalletChainsJSON:       strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
+		WalletDefaultChainID:   parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
+		SkillsDir:              strings.TrimSpace(os.Getenv("SKILLS_DIR")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
