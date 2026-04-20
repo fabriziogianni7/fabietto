@@ -59,6 +59,7 @@ type CaseResult struct {
 	Category    string                 `json:"category"`
 	Description string                 `json:"description"`
 	Passed      bool                   `json:"passed"`
+	DurationMs  float64                `json:"duration_ms"`
 	Assertions  []AssertionResult      `json:"assertions"`
 	Facts       map[string]interface{} `json:"facts"`
 	Error       string                 `json:"error,omitempty"`

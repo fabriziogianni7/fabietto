@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"custom-agent/compaction"
 	"custom-agent/embedding"
@@ -42,6 +43,7 @@ func (r *Runner) RunCases(cases []EvalCase) Report {
 }
 
 func (r *Runner) runCase(c EvalCase) CaseResult {
+	start := time.Now()
 	res := CaseResult{
 		ID:          c.ID,
 		Category:    c.Category,
@@ -49,6 +51,9 @@ func (r *Runner) runCase(c EvalCase) CaseResult {
 		Passed:      true,
 		Facts:       map[string]interface{}{},
 	}
+	defer func() {
+		res.DurationMs = float64(time.Since(start).Microseconds()) / 1000.0
+	}()
 	if c.SchemaVersion != SchemaVersion {
 		res.Passed = false
 		res.Error = fmt.Sprintf("schema_version must be %q", SchemaVersion)

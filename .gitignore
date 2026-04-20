@@ -18,6 +18,8 @@ coverage.out
 divine.txt
 reminders/reminders.jsonl
 eval/results/
+benchmarks/results/*
+!benchmarks/results/.gitkeep
 
 # Wallet
 wallet-approvals/

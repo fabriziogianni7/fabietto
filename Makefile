@@ -1,6 +1,6 @@
 GOFMT_FILES := $(shell gofmt -l .)
 
-.PHONY: ci fmt-check vet test eval
+.PHONY: ci fmt-check vet test eval benchmark release-gate
 
 ci: fmt-check vet test eval
 
@@ -19,3 +19,9 @@ test:
 
 eval:
 	go run ./cmd/eval
+
+benchmark:
+	go run ./cmd/benchmark
+
+release-gate:
+	./scripts/release-gate.sh

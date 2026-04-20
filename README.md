@@ -15,6 +15,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
 - [Observability & run artifacts](#observability--run-artifacts)
 - [Evaluation harness](#evaluation-harness)
+- [Benchmarking & release governance](#benchmarking--release-governance)
 - [Wallet](#wallet)
 - [Skills](#skills)
 - [Contributing](#contributing)
@@ -240,6 +241,29 @@ The runner exits non-zero if any case fails, and writes:
 
 ---
 
+## Benchmarking & release governance
+
+Phase 5 adds benchmark trend reporting and a release quality gate:
+
+- **Run benchmark suite**: `make benchmark`
+- **Run release gate**: `make release-gate`
+- **Benchmark artifacts**:
+  - `benchmarks/results/latest.json` (current run metrics; machine-readable)
+  - `benchmarks/results/trend.json` (rolling trend history; machine-readable)
+  - `benchmarks/results/summary.md` (human-readable summary)
+- **Gate thresholds config**: `benchmarks/config.json`
+- **Release process docs/checklist/template**: `docs/release-governance.md`
+
+Benchmarks reuse the deterministic eval corpus and compute:
+- task success rate
+- tool correctness rate
+- safety violation rate
+- latency p50/p95 (from eval case timings)
+
+CI runs benchmark + release gate and uploads benchmark artifacts.
+
+---
+
 ## Wallet
 
 Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or signer backend) are set, wallet tools are enabled.
@@ -282,6 +306,8 @@ See `skills/README.md` for format and script language policy.
   - `make fmt-check` verifies formatting (`gofmt -l .`)
   - `make vet` runs static checks (`go vet ./...`)
   - `make test` runs unit tests (`go test ./...`)
+  - `make benchmark` writes benchmark trend artifacts
+  - `make release-gate` enforces release thresholds
   - Reliability/regression-depth suite only: `go test ./agent ./tools ./memory ./compaction ./sessionqueue`
 - **Add tools**: Define and implement in `tools/tools.go`; register in the tool set passed to the agent
 - **Add gateways**: Implement the `gateway.Gateway` interface in `gateway/` and wire it in `main.go`
@@ -294,15 +320,23 @@ See `skills/README.md` for format and script language policy.
 ```
 custom-agent/
 ├── cmd/
-│   └── eval/
-│       └── main.go        # eval runner entrypoint
+│   ├── benchmark/
+│   │   └── main.go        # benchmark runner + trend report generator
+│   ├── eval/
+│   │   └── main.go        # eval runner entrypoint
+│   └── releasegate/
+│       └── main.go        # release threshold gate checker
+├── benchmarks/
+│   ├── config.json        # benchmark dimensions + release thresholds
+│   └── results/           # benchmark outputs (latest.json/trend.json/summary.md)
 ├── eval/
 │   ├── runner.go          # deterministic eval execution + assertions
 │   ├── schema.go          # eval case/result schema
 │   ├── cases/             # deterministic eval corpus (JSON fixtures)
 │   └── results/           # local eval outputs (report.json)
 ├── docs/
-│   └── eval-schema.md     # eval case schema and examples
+│   ├── eval-schema.md     # eval case schema and examples
+│   └── release-governance.md # release checklist + Agent Quality Impact template
 ├── agent/
 │   ├── agent.go           # core LLM + tools logic
 │   ├── subagents.go       # parallel sub-agent spawning
