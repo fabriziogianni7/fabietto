@@ -201,6 +201,30 @@ func (r *Runtime) RecordFallbackParser(ctx context.Context, used bool) {
 	}
 }
 
+// RecordPlanEvent emits a plan lifecycle event (planner validation, step execution, etc.).
+// eventType is a short suffix; orchestration uses prefixes like "orchestration_plan_start".
+func (r *Runtime) RecordPlanEvent(ctx context.Context, eventType string, data map[string]interface{}) {
+	if !r.Enabled() {
+		return
+	}
+	tr := r.turnFromContext(ctx)
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	prefix := "plan_"
+	if strings.HasPrefix(eventType, "orchestration_") {
+		prefix = ""
+	}
+	r.emit(Event{
+		SchemaVersion: schemaVersion,
+		EventType:     prefix + eventType,
+		Timestamp:     time.Now().UTC(),
+		RunID:         turnID(tr),
+		SessionID:     turnSession(tr),
+		Data:          data,
+	})
+}
+
 func (r *Runtime) OnToolCallStart(ctx context.Context, name, argsJSON string) {
 	if !r.Enabled() {
 		return

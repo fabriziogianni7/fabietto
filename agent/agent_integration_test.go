@@ -39,6 +39,15 @@ func (m *mockWalletService) ExecuteApproved(ctx context.Context, approvalID, pla
 func (m *mockWalletService) ListTransactions(chainID int64, limit int) (string, error) {
 	return "", nil
 }
+func (m *mockWalletService) WalletPreviewContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) (method string, decision string, gasLimit uint64, err error) {
+	return "swap", "allow", 210000, nil
+}
+func (m *mockWalletService) WalletSimulateContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) error {
+	return nil
+}
+func (m *mockWalletService) WalletReceiptSummary(ctx context.Context, chainID int64, txHash string) (string, error) {
+	return "success block=1 gas_used=21000", nil
+}
 
 func TestHandleMessage_MultiRoundToolUseReturnsFinalResponse(t *testing.T) {
 	var calls int32

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"custom-agent/agent/planning"
 	"custom-agent/compaction"
 	"custom-agent/conversation"
 	"custom-agent/gateway"
@@ -49,7 +50,9 @@ type Agent struct {
 	convStore    *conversation.Store
 	skillsDir    string
 	skillsMgr    *skills.Manager
-	telemetry    *telemetry.Runtime
+	telemetry     *telemetry.Runtime
+	planner       planning.RuntimeConfig
+	orchestration planning.OrchestrationRuntime
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
@@ -69,7 +72,21 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 		convStore:    convStore,
 		skillsDir:    skillsDir,
 		skillsMgr:    skillsMgr,
-		telemetry:    telem,
+		telemetry:     telem,
+		planner:       planning.RuntimeConfig{Enabled: false},
+		orchestration: planning.OrchestrationRuntime{Mode: planning.OrchestrationModeOff},
+	}
+}
+
+// SetPlanner configures plan-and-execute (e.g. from PLANNER_ENABLED / PLANNER_CAPABILITIES).
+func (a *Agent) SetPlanner(cfg planning.RuntimeConfig) {
+	if a != nil {
+		a.planner = cfg
+		if strings.TrimSpace(cfg.Orchestration.Mode) != "" {
+			a.orchestration = cfg.Orchestration
+		} else {
+			a.orchestration = planning.OrchestrationRuntime{Mode: planning.OrchestrationModeOff}
+		}
 	}
 }
 
@@ -235,6 +252,22 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Content: text,
 	})
 
+	if a.shouldTryGeneralOrchestration(ctx, text) {
+		if reply, ok := a.tryGeneralOrchestration(ctx, msg, text); ok {
+			finalReply = reply
+			return finalReply
+		}
+	}
+
+	if a.orchestration.Mode == planning.OrchestrationModeOff {
+		if a.shouldUseWalletPlanner(ctx, text) {
+			if reply, ok := a.tryWalletPlanner(ctx, msg, text); ok {
+				finalReply = reply
+				return finalReply
+			}
+		}
+	}
+
 	toolDefs := tools.Definitions()
 	mustExecuteWallet := a.tools.Wallet != nil && wantsWalletSend(text)
 	walletToolUsed := false
@@ -267,30 +300,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				}
 				args := tc.Function.Arguments
 				var result string
-				if tc.Function.Name == "spawn_subagents" {
-					result = a.handleSpawnSubagents(ctx, args, msg)
-				} else {
-					if tc.Function.Name == "save_memory" || tc.Function.Name == "read_memory" {
-						if injected, err := tools.InjectMemoryArgs(args, msg.Platform, msg.UserID); err == nil {
-							args = injected
-						}
-					}
-					if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
-						if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-							args = injected
-						}
-					}
-					if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
-						if injected, err := tools.InjectWalletArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-							args = injected
-						}
-					}
-					var err error
-					result, err = a.tools.ExecuteToolWithContext(ctx, tc.Function.Name, args)
-					if err != nil {
-						result = "Error: " + err.Error()
-					}
-				}
+				result = a.executeToolForMessage(ctx, msg, tc.Function.Name, args, false)
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:       openai.ChatMessageRoleTool,
 					Content:    result,
@@ -313,30 +323,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				walletToolUsed = true
 			}
 			var result string
-			if toolName == "spawn_subagents" {
-				result = a.handleSpawnSubagents(ctx, toolArgs, msg)
-			} else {
-				if toolName == "save_memory" || toolName == "read_memory" {
-					if injected, err := tools.InjectMemoryArgs(toolArgs, msg.Platform, msg.UserID); err == nil {
-						toolArgs = injected
-					}
-				}
-				if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
-					if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-						toolArgs = injected
-					}
-				}
-				if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
-					if injected, err := tools.InjectWalletArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-						toolArgs = injected
-					}
-				}
-				var err error
-				result, err = a.tools.ExecuteToolWithContext(ctx, toolName, toolArgs)
-				if err != nil {
-					result = "Error: " + err.Error()
-				}
-			}
+			result = a.executeToolForMessage(ctx, msg, toolName, toolArgs, false)
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    result,

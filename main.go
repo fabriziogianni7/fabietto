@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"custom-agent/agent"
+	"custom-agent/agent/planning"
 	"custom-agent/config"
 	"custom-agent/conversation"
 	"custom-agent/embedding"
@@ -50,6 +51,12 @@ func main() {
 	}
 	if cfg.WalletEnabled() {
 		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
+	}
+	if cfg.EffectivePlannerMode() != "off" {
+		toolInstruction += " When the wallet planner is on (PLANNER_MODE auto/wallet/always_wallet), many on-chain intents use an internal plan-and-execute pipeline (policy preview, simulation, then broadcast); you may not see separate tool calls for those steps."
+	}
+	if cfg.EffectiveOrchestrationMode() != "off" {
+		toolInstruction += " When ORCHESTRATION_MODE is auto or always, multi-step tasks may use an internal orchestration planner before normal tool use."
 	}
 	toolInstruction += "\n"
 
@@ -180,6 +187,30 @@ func main() {
 	}
 
 	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir, telemetryRuntime)
+	plannerMode := cfg.EffectivePlannerMode()
+	plannerCaps := planning.ParseCapabilities(cfg.PlannerCapabilities)
+	if plannerMode != planning.PlannerModeOff && len(plannerCaps) == 0 {
+		plannerCaps = planning.ParseCapabilities("wallet")
+	}
+	plannerOn := plannerMode != planning.PlannerModeOff
+	if plannerOn && toolSet.Wallet == nil {
+		log.Printf("[planner] mode=%s ignored (wallet not configured)", plannerMode)
+		plannerOn = false
+		plannerMode = planning.PlannerModeOff
+	}
+	orchMode := cfg.EffectiveOrchestrationMode()
+	a.SetPlanner(planning.RuntimeConfig{
+		Enabled:       plannerOn,
+		Mode:          plannerMode,
+		Capabilities:  plannerCaps,
+		Orchestration: planning.OrchestrationRuntime{Mode: orchMode},
+	})
+	if plannerOn {
+		log.Printf("[planner] mode=%s capabilities=%v", plannerMode, plannerCaps)
+	}
+	if orchMode != planning.OrchestrationModeOff {
+		log.Printf("[orchestration] mode=%s", orchMode)
+	}
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

@@ -51,6 +51,10 @@ type WalletService interface {
 	ExecuteContractCall(ctx context.Context, chainID int64, to, dataHex, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteApproved(ctx context.Context, approvalID, platform, userID, chatID string) (string, error)
 	ListTransactions(chainID int64, limit int) (string, error)
+	// Planner extensions (optional for mocks; required for production wallet.Service).
+	WalletPreviewContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) (method string, decision string, gasLimit uint64, err error)
+	WalletSimulateContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) error
+	WalletReceiptSummary(ctx context.Context, chainID int64, txHash string) (string, error)
 }
 
 // SkillsManager is the interface for listing and reading skills. Optional.

@@ -63,6 +63,20 @@ func (p *Provider) EstimateGas(ctx context.Context, from, to *common.Address, va
 	return p.client.EstimateGas(ctx, msg)
 }
 
+// CallContract executes an eth_call against latest state (simulation / read).
+func (p *Provider) CallContract(ctx context.Context, from, to *common.Address, value *big.Int, data []byte) ([]byte, error) {
+	var msg ethereum.CallMsg
+	if from != nil {
+		msg.From = *from
+	}
+	if to != nil {
+		msg.To = to
+	}
+	msg.Value = value
+	msg.Data = data
+	return p.client.CallContract(ctx, msg, nil)
+}
+
 // SendRawTransaction broadcasts a signed transaction. Returns the tx hash on success.
 func (p *Provider) SendRawTransaction(ctx context.Context, rawTx []byte) (common.Hash, error) {
 	tx := new(types.Transaction)
