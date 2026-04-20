@@ -1064,32 +1064,33 @@ func (t *Tools) httpRequest(args map[string]string, rawArgs map[string]interface
 }
 
 func runCommand(command string) (string, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", fmt.Errorf("empty command")
+	parsed, err := parseCommand(command)
+	if err != nil {
+		return "Permission denied: " + err.Error(), nil
 	}
-
-	if IsBlocked(command) {
+	if !isAllowedExecutable(parsed.Executable) {
+		return "Permission denied: executable is not in the allowlist.", nil
+	}
+	if IsBlocked(parsed.Identity) {
 		return "Permission denied: command is blocked for safety.", nil
 	}
-
-	if IsSafe(command) {
-		return executeCommand(command)
+	if !needsApproval(parsed.Executable) {
+		return executeCommand(parsed)
 	}
 
 	approved, err := LoadApprovals()
 	if err != nil {
 		return "", fmt.Errorf("failed to load approvals: %w", err)
 	}
-	if IsApproved(command, approved) {
-		return executeCommand(command)
+	if IsApproved(parsed.Identity, approved) {
+		return executeCommand(parsed)
 	}
 
-	return "Permission denied. User can approve by saying 'approve: " + command + "' in chat.", nil
+	return "Permission denied. User can approve by saying 'approve: " + parsed.Identity + "' in chat.", nil
 }
 
-func executeCommand(command string) (string, error) {
-	cmd := exec.Command("sh", "-c", command)
+func executeCommand(parsed parsedCommand) (string, error) {
+	cmd := exec.Command(parsed.Executable, parsed.Args...)
 	cmd.Dir = getWorkDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1109,7 +1110,10 @@ func executeCommand(command string) (string, error) {
 }
 
 func readFile(path string) (string, error) {
-	path = resolvePath(path)
+	path, err := resolvePathWithinWorkspace(path, false)
+	if err != nil {
+		return "", fmt.Errorf("read failed: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
@@ -1118,7 +1122,10 @@ func readFile(path string) (string, error) {
 }
 
 func writeFile(path, content string) (string, error) {
-	path = resolvePath(path)
+	path, err := resolvePathWithinWorkspace(path, true)
+	if err != nil {
+		return "", fmt.Errorf("write failed: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("mkdir failed: %w", err)
 	}

@@ -83,9 +83,9 @@ The bot can use tools when the LLM decides they're helpful:
 
 | Tool | Description |
 |------|-------------|
-| `run_command` | Run a shell command (uses current working directory). Blocked commands (e.g. `rm -rf /`) are denied. Safe commands (`ls`, `pwd`, `cat`, etc.) run immediately. Others require approval: say `approve: <command>` or `/approve <command>`. Approvals persist in `exec-approvals.json`. |
-| `read_file` | Read a file from the filesystem |
-| `write_file` | Write content to a file |
+| `run_command` | Run a command under strict execution policy. Shell features and metacharacters (`;`, `|`, `&&`, redirects, subshells, globs, etc.) are rejected. Executables must be allowlisted. Read-only commands (`ls`, `pwd`, `whoami`, `date`, `id`, `head`, `tail`, `wc`, `file`, `rg`) run immediately; selected developer commands (`go`, `git`, `make`) require prior approval (`approve: <command>` or `/approve <command>`). Approvals are normalized and persisted in `exec-approvals.json`. |
+| `read_file` | Read a file from the filesystem, restricted to allowed workspace roots (defaults to repository root) |
+| `write_file` | Write content to a file, restricted to allowed workspace roots (defaults to repository root) |
 | `web_search` | Search the web (Brave Search API) |
 | `save_memory` | Save a fact or preference to long-term memory (survives `/new`) |
 | `read_memory` | Search long-term memory (semantic search when Ollama is available) |
@@ -104,6 +104,14 @@ The bot can use tools when the LLM decides they're helpful:
 | `write_skill` | Persist a new skill (after security/feasibility checks) |
 
 The agent loop runs until the LLM returns a final text response or hits the tool limit (10 rounds). Add or modify tools in `tools/tools.go`.
+
+### Tool safety boundaries
+
+- **Workspace jail for file tools**: `read_file` and `write_file` only operate within configured workspace roots. By default this is the current Git repository root. Paths outside the jail (including traversal attempts like `../..`) are rejected.
+- **Optional roots override**: set `TOOL_WORKSPACE_ROOTS` to a colon-separated list of absolute/relative roots to allow (example: `TOOL_WORKSPACE_ROOTS=.:/tmp/scratch`).
+- **Command execution policy**: `run_command` does **not** run through `sh -c`. Commands are tokenized and executed directly after policy checks.
+- **No shell chaining/expansion**: multiline/chaining and shell metacharacters are denied to prevent policy bypass via formatting tricks.
+- **Normalized approvals**: approvals are matched against a normalized command identity (trimmed/lowercased executable + normalized whitespace args), so replay attempts with spacing/casing variants do not bypass controls.
 
 ---
 
