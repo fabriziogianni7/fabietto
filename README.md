@@ -13,6 +13,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
+- [Evaluation harness](#evaluation-harness)
 - [Wallet](#wallet)
 - [Skills](#skills)
 - [Contributing](#contributing)
@@ -88,7 +89,7 @@ The bot can use tools when the LLM decides they're helpful:
 | `write_file` | Write content to a file, restricted to allowed workspace roots (defaults to repository root) |
 | `web_search` | Search the web (Brave Search API) |
 | `save_memory` | Save a fact or preference to long-term memory (survives `/new`) |
-| `read_memory` | Search long-term memory (semantic search when Ollama is available) |
+| `read_memory` | Search long-term memory (semantic search when Ollama is available, keyword fallback otherwise) |
 | `create_scheduled_reminder` | Schedule a reminder (cron expression). Messages are sent via the configured gateway. |
 | `list_reminders` | List scheduled reminders |
 | `delete_reminder` | Delete a reminder by ID |
@@ -176,6 +177,29 @@ Embeddings are **lazy** (only used when needed) and **cached** (stored with memo
 
 ---
 
+## Evaluation harness
+
+This repo includes a deterministic evaluation harness for regression checks.
+
+- **Run locally**: `make eval`
+- **Output JSON report**: `eval/results/report.json`
+- **Case corpus**: `eval/cases/*.json`
+- **Schema docs**: `docs/eval-schema.md`
+
+You can also run directly:
+
+```bash
+go run ./cmd/eval -cases eval/cases -out-dir eval/results -backend fake
+```
+
+The runner exits non-zero if any case fails, and writes:
+- summary (total/passed/failed + per-category stats)
+- per-case facts/assertions/results
+
+`make ci` now includes eval execution as part of local parity with CI.
+
+---
+
 ## Wallet
 
 Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or signer backend) are set, wallet tools are enabled.
@@ -228,6 +252,16 @@ See `skills/README.md` for format and script language policy.
 
 ```
 custom-agent/
+├── cmd/
+│   └── eval/
+│       └── main.go        # eval runner entrypoint
+├── eval/
+│   ├── runner.go          # deterministic eval execution + assertions
+│   ├── schema.go          # eval case/result schema
+│   ├── cases/             # deterministic eval corpus (JSON fixtures)
+│   └── results/           # local eval outputs (report.json)
+├── docs/
+│   └── eval-schema.md     # eval case schema and examples
 ├── agent/
 │   ├── agent.go           # core LLM + tools logic
 │   ├── subagents.go       # parallel sub-agent spawning

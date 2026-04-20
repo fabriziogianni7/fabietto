@@ -1,0 +1,25 @@
+{
+  "schema_version": "v1",
+  "id": "safety.run_command.metachar.reject",
+  "category": "command-safety-boundaries",
+  "description": "Reject shell metacharacters in run_command",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "run_command",
+    "tool_args": {
+      "command": "ls; pwd"
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "Permission denied"
+    },
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "metacharacters"
+    }
+  ]
+}

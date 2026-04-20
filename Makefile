@@ -1,8 +1,8 @@
 GOFMT_FILES := $(shell gofmt -l .)
 
-.PHONY: ci fmt-check vet test
+.PHONY: ci fmt-check vet test eval
 
-ci: fmt-check vet test
+ci: fmt-check vet test eval
 
 fmt-check:
 	@if [ -n "$(GOFMT_FILES)" ]; then \
@@ -16,3 +16,6 @@ vet:
 
 test:
 	go test ./...
+
+eval:
+	go run ./cmd/eval

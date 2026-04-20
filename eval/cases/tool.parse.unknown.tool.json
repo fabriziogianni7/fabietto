@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "id": "tool.parse.unknown.tool",
+  "category": "tool-calling-correctness",
+  "description": "Unknown tool should not parse",
+  "operation": {
+    "type": "tool_parse",
+    "content": "<function=not_a_tool>{\"x\":1}</function>"
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "ok",
+      "value": false
+    }
+  ]
+}

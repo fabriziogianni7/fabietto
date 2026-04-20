@@ -1,0 +1,26 @@
+{
+  "schema_version": "v1",
+  "id": "compaction.estimate.basic",
+  "category": "compaction-sensitive-flow",
+  "description": "Estimate tokens from message chars",
+  "operation": {
+    "type": "compaction_estimate",
+    "messages": [
+      {
+        "role": "user",
+        "content": "abcd"
+      },
+      {
+        "role": "assistant",
+        "content": "efghijkl"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "estimated_tokens",
+      "value": 3
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": "v1",
+  "id": "compaction.merge.appends.pending",
+  "category": "compaction-sensitive-flow",
+  "description": "Merge appends unique pending actions",
+  "operation": {
+    "type": "compaction_merge",
+    "context": {
+      "session_intent": "A",
+      "pending_actions": [
+        "task-1"
+      ],
+      "key_facts": {
+        "lang": "go"
+      }
+    },
+    "merge": {
+      "pending_actions": [
+        "task-1",
+        "task-2"
+      ],
+      "key_facts": {
+        "scope": "eval"
+      }
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "pending_actions",
+      "value": "task-2"
+    },
+    {
+      "type": "contains",
+      "key": "key_facts.scope",
+      "value": "eval"
+    }
+  ]
+}

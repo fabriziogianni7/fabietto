@@ -1,0 +1,121 @@
+{
+  "schema_version": "v1",
+  "id": "compaction.session.recent.window",
+  "category": "compaction-sensitive-flow",
+  "description": "Recent keeps max message window",
+  "operation": {
+    "type": "session_recent",
+    "messages": [
+      {
+        "role": "user",
+        "content": "m01"
+      },
+      {
+        "role": "assistant",
+        "content": "m02"
+      },
+      {
+        "role": "user",
+        "content": "m03"
+      },
+      {
+        "role": "assistant",
+        "content": "m04"
+      },
+      {
+        "role": "user",
+        "content": "m05"
+      },
+      {
+        "role": "assistant",
+        "content": "m06"
+      },
+      {
+        "role": "user",
+        "content": "m07"
+      },
+      {
+        "role": "assistant",
+        "content": "m08"
+      },
+      {
+        "role": "user",
+        "content": "m09"
+      },
+      {
+        "role": "assistant",
+        "content": "m10"
+      },
+      {
+        "role": "user",
+        "content": "m11"
+      },
+      {
+        "role": "assistant",
+        "content": "m12"
+      },
+      {
+        "role": "user",
+        "content": "m13"
+      },
+      {
+        "role": "assistant",
+        "content": "m14"
+      },
+      {
+        "role": "user",
+        "content": "m15"
+      },
+      {
+        "role": "assistant",
+        "content": "m16"
+      },
+      {
+        "role": "user",
+        "content": "m17"
+      },
+      {
+        "role": "assistant",
+        "content": "m18"
+      },
+      {
+        "role": "user",
+        "content": "m19"
+      },
+      {
+        "role": "assistant",
+        "content": "m20"
+      },
+      {
+        "role": "user",
+        "content": "m21"
+      },
+      {
+        "role": "assistant",
+        "content": "m22"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "input_count",
+      "value": 22
+    },
+    {
+      "type": "equals",
+      "key": "recent_count",
+      "value": 20
+    },
+    {
+      "type": "equals",
+      "key": "first_recent",
+      "value": "m03"
+    },
+    {
+      "type": "equals",
+      "key": "last_recent",
+      "value": "m22"
+    }
+  ]
+}

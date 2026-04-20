@@ -1,0 +1,25 @@
+{
+  "schema_version": "v1",
+  "id": "memory.keyword.no.match",
+  "category": "memory-retrieval-fallback",
+  "description": "Keyword search returns no matches",
+  "operation": {
+    "type": "memory_search",
+    "embedder_mode": "disabled",
+    "query": "quantum",
+    "limit": 5,
+    "memories": [
+      {
+        "content": "User loves carbonara pasta",
+        "tags": "food,preference"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "result_count",
+      "value": 0
+    }
+  ]
+}

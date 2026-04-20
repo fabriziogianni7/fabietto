@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "id": "compaction.estimate.nonzero.longer",
+  "category": "compaction-sensitive-flow",
+  "description": "Longer text yields larger estimate",
+  "operation": {
+    "type": "compaction_estimate",
+    "messages": [
+      {
+        "role": "user",
+        "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "gte",
+      "key": "estimated_tokens",
+      "value": 30
+    }
+  ]
+}

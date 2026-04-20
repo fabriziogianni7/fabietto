@@ -17,6 +17,7 @@ conversation_embeddings/*.jsonl
 coverage.out
 divine.txt
 reminders/reminders.jsonl
+eval/results/
 
 # Wallet
 wallet-approvals/

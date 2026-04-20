@@ -1,0 +1,27 @@
+{
+  "schema_version": "v1",
+  "id": "tool.parse.tag.direct",
+  "category": "tool-calling-correctness",
+  "description": "Parse direct tool tag pattern",
+  "operation": {
+    "type": "tool_parse",
+    "content": "<read_file>{\"path\":\"README.md\"}</function>"
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "ok",
+      "value": true
+    },
+    {
+      "type": "equals",
+      "key": "tool_name",
+      "value": "read_file"
+    },
+    {
+      "type": "contains",
+      "key": "args_json",
+      "value": "README.md"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "v1",
+  "id": "memory.embed.deterministic.rank",
+  "category": "memory-retrieval-fallback",
+  "description": "Deterministic embedder ranks semantically similar memory first",
+  "operation": {
+    "type": "memory_search",
+    "embedder_mode": "deterministic",
+    "query": "pizza dinner",
+    "limit": 2,
+    "memories": [
+      {
+        "content": "Prefers pizza on Friday",
+        "tags": "food"
+      },
+      {
+        "content": "Likes long bike rides",
+        "tags": "fitness"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "result_count",
+      "value": 2
+    },
+    {
+      "type": "contains",
+      "key": "result_contents",
+      "value": "pizza"
+    }
+  ]
+}
