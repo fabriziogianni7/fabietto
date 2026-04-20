@@ -24,6 +24,14 @@ type Compactor struct {
 	threshold int // token count; compact when exceeded
 }
 
+// Threshold returns the configured token threshold used for compaction decisions.
+func (c *Compactor) Threshold() int {
+	if c == nil {
+		return DefaultTokenThreshold
+	}
+	return c.threshold
+}
+
 // NewCompactor creates a compactor.
 func NewCompactor(client *openai.Client, model string, tokenThreshold int) *Compactor {
 	if tokenThreshold <= 0 {

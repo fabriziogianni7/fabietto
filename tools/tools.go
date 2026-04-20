@@ -19,6 +19,7 @@ import (
 	"custom-agent/memory"
 	"custom-agent/reminders"
 	"custom-agent/skills"
+	"custom-agent/telemetry"
 	"custom-agent/x402client"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -75,6 +76,7 @@ type Tools struct {
 	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
 	Skills            SkillsManager      // optional; when set, skills tools are available
 	LLMClient         *openai.Client     // optional; when set, write_skill runs security/feasibility checks
+	Telemetry         *telemetry.Runtime // optional
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -109,6 +111,11 @@ func (t *Tools) SetSkills(sm SkillsManager) {
 // SetLLMClient sets the optional LLM client for write_skill security/feasibility checks.
 func (t *Tools) SetLLMClient(c *openai.Client) {
 	t.LLMClient = c
+}
+
+// SetTelemetry sets optional telemetry runtime used for tool call observability.
+func (t *Tools) SetTelemetry(rt *telemetry.Runtime) {
+	t.Telemetry = rt
 }
 
 // ParseToolCallFromContent extracts a tool call from model output when the model
@@ -487,51 +494,90 @@ func DefinitionsForSubagent() []openai.Tool {
 // ExecuteTool runs the named tool with the given JSON arguments and returns the result.
 // For save_memory and read_memory, platform and userID must be injected by the caller via InjectMemoryArgs.
 func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
+	return t.ExecuteToolWithContext(context.Background(), name, argsJSON)
+}
+
+// ExecuteToolWithContext runs tool execution with context for telemetry.
+func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON string) (string, error) {
+	start := time.Now()
+	if t.Telemetry != nil {
+		t.Telemetry.OnToolCallStart(ctx, name, argsJSON)
+	}
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		if t.Telemetry != nil {
+			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "")
+		}
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 	strArgs := toStringMap(args)
 
+	var out string
+	var err error
 	switch name {
 	case "run_command":
-		return runCommand(strArgs["command"])
+		out, err = runCommand(strArgs["command"])
 	case "read_file":
-		return readFile(strArgs["path"])
+		out, err = readFile(strArgs["path"])
 	case "write_file":
-		return writeFile(strArgs["path"], strArgs["content"])
+		out, err = writeFile(strArgs["path"], strArgs["content"])
 	case "web_search":
-		return t.webSearch(strArgs["query"])
+		out, err = t.webSearch(strArgs["query"])
 	case "save_memory":
-		return t.saveMemory(strArgs)
+		out, err = t.saveMemory(strArgs)
 	case "read_memory":
-		return t.readMemory(strArgs, args)
+		out, err = t.readMemory(strArgs, args)
 	case "create_scheduled_reminder":
-		return t.createScheduledReminder(strArgs)
+		out, err = t.createScheduledReminder(strArgs)
 	case "list_reminders":
-		return t.listReminders(strArgs)
+		out, err = t.listReminders(strArgs)
 	case "delete_reminder":
-		return t.deleteReminder(strArgs)
+		out, err = t.deleteReminder(strArgs)
 	case "http_request":
-		return t.httpRequest(strArgs, args)
+		out, err = t.httpRequest(strArgs, args)
 	case "wallet_get_balance":
-		return t.walletGetBalance(strArgs, args)
+		out, err = t.walletGetBalance(strArgs, args)
 	case "wallet_execute_transfer":
-		return t.walletExecuteTransfer(strArgs, args)
+		out, err = t.walletExecuteTransfer(strArgs, args)
 	case "wallet_execute_contract_call":
-		return t.walletExecuteContractCall(strArgs, args)
+		out, err = t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
-		return t.walletListTransactions(strArgs, args)
+		out, err = t.walletListTransactions(strArgs, args)
 	case "list_skills":
-		return t.listSkills()
+		out, err = t.listSkills()
 	case "read_skill":
-		return t.readSkill(strArgs, args)
+		out, err = t.readSkill(strArgs, args)
 	case "read_skill_script":
-		return t.readSkillScript(strArgs)
+		out, err = t.readSkillScript(strArgs)
 	case "write_skill":
-		return t.writeSkill(strArgs, args)
+		out, err = t.writeSkill(strArgs, args)
 	default:
-		return "", fmt.Errorf("unknown tool: %s", name)
+		err = fmt.Errorf("unknown tool: %s", name)
+	}
+	if t.Telemetry != nil {
+		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out)
+	}
+	return out, err
+}
+
+func categorizeToolError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "unknown tool"):
+		return "unknown_tool"
+	case strings.Contains(s, "invalid arguments"), strings.Contains(s, "invalid url"):
+		return "invalid_arguments"
+	case strings.Contains(s, "permission denied"), strings.Contains(s, "blocked"), strings.Contains(s, "approval"):
+		return "permission_denied"
+	case strings.Contains(s, "timeout"), strings.Contains(s, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(s, "not configured"):
+		return "not_configured"
+	default:
+		return "execution_error"
 	}
 }
 

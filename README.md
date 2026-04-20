@@ -13,6 +13,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
+- [Observability & run artifacts](#observability--run-artifacts)
 - [Evaluation harness](#evaluation-harness)
 - [Wallet](#wallet)
 - [Skills](#skills)
@@ -174,6 +175,45 @@ The bot has **persistent memory** that survives session resets. Use `save_memory
 ```
 
 Embeddings are **lazy** (only used when needed) and **cached** (stored with memories). If Ollama is unavailable, the bot falls back to keyword search.
+
+---
+
+## Observability & run artifacts
+
+Phase 3 telemetry is enabled by default and writes:
+
+- **Structured events** (JSON in logs) for:
+  - `agent_turn_start` / `agent_turn_end`
+  - `tool_call_start` / `tool_call_end`
+  - tool error categories (`unknown_tool`, `invalid_arguments`, `permission_denied`, `timeout`, `not_configured`, `execution_error`)
+  - `compaction_decision`
+  - `memory_retrieval_decision`
+- **In-process metrics** (machine-readable JSON artifact) with counters/timers:
+  - turn count + turn latency
+  - tool calls, per-tool latency, per-tool error counts
+  - fallback parser usage
+- **Run artifacts** per turn/run:
+  - `metadata.json` (session/gateway/model/timestamps)
+  - `transcript.json` (normalized transcript with event kinds)
+  - `tool_summary.json` (tool call outcome/duration/error category)
+  - `metrics.json` (counter/timer snapshot)
+
+Artifacts are written to `run-artifacts/<run_id>/` by default.
+
+### Telemetry env flags
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `TELEMETRY_ENABLED` | `true` | Master telemetry on/off switch |
+| `TELEMETRY_VERBOSITY` | `basic` | `basic` or `debug` (debug includes truncated tool args in events) |
+| `TELEMETRY_METRICS_ENABLED` | `true` | Enable in-process metric collection |
+| `RUN_ARTIFACTS_ENABLED` | `true` | Enable writing run artifacts |
+| `RUN_ARTIFACTS_DIR` | `run-artifacts` | Artifact output directory |
+| `RUN_ARTIFACT_RETENTION_DAYS` | `7` | Retention window; older run directories are pruned |
+
+### Retention policy
+
+On each artifact write, the runtime prunes run directories older than `RUN_ARTIFACT_RETENTION_DAYS` using directory mtime. Set a larger value for longer forensic retention, or disable artifacts entirely with `RUN_ARTIFACTS_ENABLED=false`.
 
 ---
 

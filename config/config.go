@@ -61,6 +61,14 @@ type Config struct {
 
 	// Skills: directory for user-installed skills (OpenClaw-style SKILL.md folders). Default: ./skills-data
 	SkillsDir string
+
+	// Telemetry / run artifacts (optional)
+	TelemetryEnabled         bool
+	TelemetryVerbosity       string // off | basic | debug
+	TelemetryMetricsEnabled  bool
+	RunArtifactsEnabled      bool
+	RunArtifactsDir          string
+	RunArtifactRetentionDays int
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -80,19 +88,31 @@ func Load() (*Config, error) {
 		OllamaURL:           strings.TrimSpace(os.Getenv("OLLAMA_URL")),
 		OllamaEmbedModel:    strings.TrimSpace(os.Getenv("OLLAMA_EMBED_MODEL")),
 
-		EVM_RPC_URL:            strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
-		ChainID:                parseInt64(os.Getenv("CHAIN_ID"), 1),
-		WalletSignerBackend:    strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
-		WalletPrivateKeyEnv:    strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
-		WalletAccountMode:      strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
-		WalletNativeSpendLimit: strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
-		WalletApprovalDir:      strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
-		WalletChainsJSON:       strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
-		WalletDefaultChainID:   parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
-		SkillsDir:              strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+		EVM_RPC_URL:              strings.TrimSpace(os.Getenv("EVM_RPC_URL")),
+		ChainID:                  parseInt64(os.Getenv("CHAIN_ID"), 1),
+		WalletSignerBackend:      strings.TrimSpace(os.Getenv("WALLET_SIGNER_BACKEND")),
+		WalletPrivateKeyEnv:      strings.TrimSpace(os.Getenv("WALLET_PRIVATE_KEY_ENV")),
+		WalletAccountMode:        strings.TrimSpace(os.Getenv("WALLET_ACCOUNT_MODE")),
+		WalletNativeSpendLimit:   strings.TrimSpace(os.Getenv("WALLET_NATIVE_SPEND_LIMIT")),
+		WalletApprovalDir:        strings.TrimSpace(os.Getenv("WALLET_APPROVAL_DIR")),
+		WalletChainsJSON:         strings.TrimSpace(os.Getenv("WALLET_CHAINS")),
+		WalletDefaultChainID:     parseInt64(os.Getenv("WALLET_DEFAULT_CHAIN_ID"), 0),
+		SkillsDir:                strings.TrimSpace(os.Getenv("SKILLS_DIR")),
+		TelemetryEnabled:         parseBool(os.Getenv("TELEMETRY_ENABLED"), true),
+		TelemetryVerbosity:       strings.TrimSpace(os.Getenv("TELEMETRY_VERBOSITY")),
+		TelemetryMetricsEnabled:  parseBool(os.Getenv("TELEMETRY_METRICS_ENABLED"), true),
+		RunArtifactsEnabled:      parseBool(os.Getenv("RUN_ARTIFACTS_ENABLED"), true),
+		RunArtifactsDir:          strings.TrimSpace(os.Getenv("RUN_ARTIFACTS_DIR")),
+		RunArtifactRetentionDays: parseInt(os.Getenv("RUN_ARTIFACT_RETENTION_DAYS"), 7),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
+	}
+	if cfg.TelemetryVerbosity == "" {
+		cfg.TelemetryVerbosity = "basic"
+	}
+	if cfg.RunArtifactsDir == "" {
+		cfg.RunArtifactsDir = "run-artifacts"
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -159,4 +179,19 @@ func (c *Config) WalletEnabled() bool {
 		return os.Getenv(c.WalletPrivateKeyEnv) != ""
 	}
 	return true
+}
+
+func parseBool(s string, defaultVal bool) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return defaultVal
+	}
+	switch s {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultVal
+	}
 }

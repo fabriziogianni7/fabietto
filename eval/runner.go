@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -122,7 +123,7 @@ func (r *Runner) runToolExecute(op Operation) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	output, execErr := t.ExecuteTool(op.ToolName, string(argsJSON))
+	output, execErr := t.ExecuteToolWithContext(context.Background(), op.ToolName, string(argsJSON))
 	facts := map[string]interface{}{
 		"tool_name": op.ToolName,
 		"output":    output,

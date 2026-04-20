@@ -9,6 +9,7 @@ import (
 
 	"custom-agent/gateway"
 	"custom-agent/session"
+	"custom-agent/telemetry"
 	"custom-agent/tools"
 
 	"github.com/sashabaranov/go-openai"
@@ -182,7 +183,19 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 					})
 					continue
 				}
-				result, err := a.tools.ExecuteTool(tc.Function.Name, args)
+				toolCtx := subCtx
+				if a.telemetry != nil {
+					tr := &telemetry.TurnRecorder{
+						RunID:     "subagent",
+						SessionID: session.SessionKey(msg.Platform, msg.UserID),
+						Platform:  msg.Platform,
+						Model:     subagentModelForIndex(spec.Index),
+						Gateway:   "subagent",
+						StartedAt: time.Now().UTC(),
+					}
+					toolCtx = a.telemetry.WithTurn(subCtx, tr)
+				}
+				result, err := a.tools.ExecuteToolWithContext(toolCtx, tc.Function.Name, args)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
@@ -213,7 +226,19 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 					Name:       toolName,
 				})
 			} else {
-				result, err := a.tools.ExecuteTool(toolName, toolArgs)
+				toolCtx := subCtx
+				if a.telemetry != nil {
+					tr := &telemetry.TurnRecorder{
+						RunID:     "subagent",
+						SessionID: session.SessionKey(msg.Platform, msg.UserID),
+						Platform:  msg.Platform,
+						Model:     subagentModelForIndex(spec.Index),
+						Gateway:   "subagent",
+						StartedAt: time.Now().UTC(),
+					}
+					toolCtx = a.telemetry.WithTurn(subCtx, tr)
+				}
+				result, err := a.tools.ExecuteToolWithContext(toolCtx, toolName, toolArgs)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
