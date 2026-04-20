@@ -1,0 +1,34 @@
+{
+  "schema_version": "v1",
+  "id": "memory.keyword.single.match",
+  "category": "memory-retrieval-fallback",
+  "description": "Keyword search returns matching memory",
+  "operation": {
+    "type": "memory_search",
+    "embedder_mode": "disabled",
+    "query": "carbonara",
+    "limit": 5,
+    "memories": [
+      {
+        "content": "User loves carbonara pasta",
+        "tags": "food,preference"
+      },
+      {
+        "content": "User likes hiking",
+        "tags": "hobby"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "result_count",
+      "value": 1
+    },
+    {
+      "type": "contains",
+      "key": "result_contents",
+      "value": "carbonara"
+    }
+  ]
+}

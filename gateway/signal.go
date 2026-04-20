@@ -113,9 +113,9 @@ func (g *SignalGateway) Run(ctx context.Context, handler Handler) error {
 
 				incoming := IncomingMessage{
 					Platform:  "signal",
-					UserID:   sender,
-					ChatID:   sender,
-					Text:     text,
+					UserID:    sender,
+					ChatID:    sender,
+					Text:      text,
 					ReplyToID: fmt.Sprintf("%d", env.Timestamp),
 				}
 

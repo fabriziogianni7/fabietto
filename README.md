@@ -13,6 +13,9 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
+- [Observability & run artifacts](#observability--run-artifacts)
+- [Evaluation harness](#evaluation-harness)
+- [Benchmarking & release governance](#benchmarking--release-governance)
 - [Wallet](#wallet)
 - [Skills](#skills)
 - [Contributing](#contributing)
@@ -83,12 +86,12 @@ The bot can use tools when the LLM decides they're helpful:
 
 | Tool | Description |
 |------|-------------|
-| `run_command` | Run a shell command (uses current working directory). Blocked commands (e.g. `rm -rf /`) are denied. Safe commands (`ls`, `pwd`, `cat`, etc.) run immediately. Others require approval: say `approve: <command>` or `/approve <command>`. Approvals persist in `exec-approvals.json`. |
-| `read_file` | Read a file from the filesystem |
-| `write_file` | Write content to a file |
+| `run_command` | Run a command under strict execution policy. Shell features and metacharacters (`;`, `|`, `&&`, redirects, subshells, globs, etc.) are rejected. Executables must be allowlisted. Read-only commands (`ls`, `pwd`, `whoami`, `date`, `id`, `head`, `tail`, `wc`, `file`, `rg`) run immediately; selected developer commands (`go`, `git`, `make`) require prior approval (`approve: <command>` or `/approve <command>`). Approvals are normalized and persisted in `exec-approvals.json`. |
+| `read_file` | Read a file from the filesystem, restricted to allowed workspace roots (defaults to repository root) |
+| `write_file` | Write content to a file, restricted to allowed workspace roots (defaults to repository root) |
 | `web_search` | Search the web (Brave Search API) |
 | `save_memory` | Save a fact or preference to long-term memory (survives `/new`) |
-| `read_memory` | Search long-term memory (semantic search when Ollama is available) |
+| `read_memory` | Search long-term memory (semantic search when Ollama is available, keyword fallback otherwise) |
 | `create_scheduled_reminder` | Schedule a reminder (cron expression). Messages are sent via the configured gateway. |
 | `list_reminders` | List scheduled reminders |
 | `delete_reminder` | Delete a reminder by ID |
@@ -104,6 +107,14 @@ The bot can use tools when the LLM decides they're helpful:
 | `write_skill` | Persist a new skill (after security/feasibility checks) |
 
 The agent loop runs until the LLM returns a final text response or hits the tool limit (10 rounds). Add or modify tools in `tools/tools.go`.
+
+### Tool safety boundaries
+
+- **Workspace jail for file tools**: `read_file` and `write_file` only operate within configured workspace roots. By default this is the current Git repository root. Paths outside the jail (including traversal attempts like `../..`) are rejected.
+- **Optional roots override**: set `TOOL_WORKSPACE_ROOTS` to a colon-separated list of absolute/relative roots to allow (example: `TOOL_WORKSPACE_ROOTS=.:/tmp/scratch`).
+- **Command execution policy**: `run_command` does **not** run through `sh -c`. Commands are tokenized and executed directly after policy checks.
+- **No shell chaining/expansion**: multiline/chaining and shell metacharacters are denied to prevent policy bypass via formatting tricks.
+- **Normalized approvals**: approvals are matched against a normalized command identity (trimmed/lowercased executable + normalized whitespace args), so replay attempts with spacing/casing variants do not bypass controls.
 
 ---
 
@@ -168,6 +179,91 @@ Embeddings are **lazy** (only used when needed) and **cached** (stored with memo
 
 ---
 
+## Observability & run artifacts
+
+Phase 3 telemetry is enabled by default and writes:
+
+- **Structured events** (JSON in logs) for:
+  - `agent_turn_start` / `agent_turn_end`
+  - `tool_call_start` / `tool_call_end`
+  - tool error categories (`unknown_tool`, `invalid_arguments`, `permission_denied`, `timeout`, `not_configured`, `execution_error`)
+  - `compaction_decision`
+  - `memory_retrieval_decision`
+- **In-process metrics** (machine-readable JSON artifact) with counters/timers:
+  - turn count + turn latency
+  - tool calls, per-tool latency, per-tool error counts
+  - fallback parser usage
+- **Run artifacts** per turn/run:
+  - `metadata.json` (session/gateway/model/timestamps)
+  - `transcript.json` (normalized transcript with event kinds)
+  - `tool_summary.json` (tool call outcome/duration/error category)
+  - `metrics.json` (counter/timer snapshot)
+
+Artifacts are written to `run-artifacts/<run_id>/` by default.
+
+### Telemetry env flags
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `TELEMETRY_ENABLED` | `true` | Master telemetry on/off switch |
+| `TELEMETRY_VERBOSITY` | `basic` | `basic` or `debug` (debug includes truncated tool args in events) |
+| `TELEMETRY_METRICS_ENABLED` | `true` | Enable in-process metric collection |
+| `RUN_ARTIFACTS_ENABLED` | `true` | Enable writing run artifacts |
+| `RUN_ARTIFACTS_DIR` | `run-artifacts` | Artifact output directory |
+| `RUN_ARTIFACT_RETENTION_DAYS` | `7` | Retention window; older run directories are pruned |
+
+### Retention policy
+
+On each artifact write, the runtime prunes run directories older than `RUN_ARTIFACT_RETENTION_DAYS` using directory mtime. Set a larger value for longer forensic retention, or disable artifacts entirely with `RUN_ARTIFACTS_ENABLED=false`.
+
+---
+
+## Evaluation harness
+
+This repo includes a deterministic evaluation harness for regression checks.
+
+- **Run locally**: `make eval`
+- **Output JSON report**: `eval/results/report.json`
+- **Case corpus**: `eval/cases/*.json`
+- **Schema docs**: `docs/eval-schema.md`
+
+You can also run directly:
+
+```bash
+go run ./cmd/eval -cases eval/cases -out-dir eval/results -backend fake
+```
+
+The runner exits non-zero if any case fails, and writes:
+- summary (total/passed/failed + per-category stats)
+- per-case facts/assertions/results
+
+`make ci` now includes eval execution as part of local parity with CI.
+
+---
+
+## Benchmarking & release governance
+
+Phase 5 adds benchmark trend reporting and a release quality gate:
+
+- **Run benchmark suite**: `make benchmark`
+- **Run release gate**: `make release-gate`
+- **Benchmark artifacts**:
+  - `benchmarks/results/latest.json` (current run metrics; machine-readable)
+  - `benchmarks/results/trend.json` (rolling trend history; machine-readable)
+  - `benchmarks/results/summary.md` (human-readable summary)
+- **Gate thresholds config**: `benchmarks/config.json`
+- **Release process docs/checklist/template**: `docs/release-governance.md`
+
+Benchmarks reuse the deterministic eval corpus and compute:
+- task success rate
+- tool correctness rate
+- safety violation rate
+- latency p50/p95 (from eval case timings)
+
+CI runs benchmark + release gate and uploads benchmark artifacts.
+
+---
+
 ## Wallet
 
 Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or signer backend) are set, wallet tools are enabled.
@@ -206,7 +302,13 @@ See `skills/README.md` for format and script language policy.
 
 ## Contributing
 
-- **Run tests**: `go test ./...`
+- **Run CI checks locally**: `make ci`
+  - `make fmt-check` verifies formatting (`gofmt -l .`)
+  - `make vet` runs static checks (`go vet ./...`)
+  - `make test` runs unit tests (`go test ./...`)
+  - `make benchmark` writes benchmark trend artifacts
+  - `make release-gate` enforces release thresholds
+  - Reliability/regression-depth suite only: `go test ./agent ./tools ./memory ./compaction ./sessionqueue`
 - **Add tools**: Define and implement in `tools/tools.go`; register in the tool set passed to the agent
 - **Add gateways**: Implement the `gateway.Gateway` interface in `gateway/` and wire it in `main.go`
 - **Code style**: Standard Go formatting (`gofmt`). Keep packages focused; wallet, reminders, and compaction are modular
@@ -217,6 +319,24 @@ See `skills/README.md` for format and script language policy.
 
 ```
 custom-agent/
+├── cmd/
+│   ├── benchmark/
+│   │   └── main.go        # benchmark runner + trend report generator
+│   ├── eval/
+│   │   └── main.go        # eval runner entrypoint
+│   └── releasegate/
+│       └── main.go        # release threshold gate checker
+├── benchmarks/
+│   ├── config.json        # benchmark dimensions + release thresholds
+│   └── results/           # benchmark outputs (latest.json/trend.json/summary.md)
+├── eval/
+│   ├── runner.go          # deterministic eval execution + assertions
+│   ├── schema.go          # eval case/result schema
+│   ├── cases/             # deterministic eval corpus (JSON fixtures)
+│   └── results/           # local eval outputs (report.json)
+├── docs/
+│   ├── eval-schema.md     # eval case schema and examples
+│   └── release-governance.md # release checklist + Agent Quality Impact template
 ├── agent/
 │   ├── agent.go           # core LLM + tools logic
 │   ├── subagents.go       # parallel sub-agent spawning

@@ -32,6 +32,14 @@ type Store struct {
 	embedder embedding.Embedder
 }
 
+// SearchMode returns the retrieval strategy currently available.
+func (s *Store) SearchMode() string {
+	if s == nil || s.embedder == nil {
+		return "keyword"
+	}
+	return "embedding"
+}
+
 // NewStore creates a memory store. embedder may be nil for keyword-only search.
 func NewStore(embedder embedding.Embedder) *Store {
 	return &Store{embedder: embedder}

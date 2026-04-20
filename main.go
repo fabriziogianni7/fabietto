@@ -5,8 +5,8 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,15 +20,16 @@ import (
 	"custom-agent/memory"
 	"custom-agent/reminders"
 	"custom-agent/sessionqueue"
+	"custom-agent/skills"
+	"custom-agent/telemetry"
 	"custom-agent/tools"
 	"custom-agent/wallet"
-	"custom-agent/x402client"
-	"custom-agent/skills"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
 	"custom-agent/wallet/policy"
 	"custom-agent/wallet/signer"
+	"custom-agent/x402client"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -79,6 +80,16 @@ func main() {
 	reminderStore := reminders.NewStore()
 
 	toolSet := tools.NewToolsWithReminderStore(cfg.BraveSearchAPIKey, memoryStore, reminderStore)
+	telemetryCfg := telemetry.Config{
+		Enabled:               cfg.TelemetryEnabled,
+		Verbosity:             cfg.TelemetryVerbosity,
+		ArtifactsEnabled:      cfg.RunArtifactsEnabled,
+		ArtifactsDir:          cfg.RunArtifactsDir,
+		ArtifactRetentionDays: cfg.RunArtifactRetentionDays,
+		MetricsEnabled:        cfg.TelemetryMetricsEnabled,
+	}
+	telemetryRuntime := telemetry.NewRuntime(telemetryCfg)
+	toolSet.Telemetry = telemetryRuntime
 	if cfg.SkillsDir != "" {
 		sm := skills.NewManager(cfg.SkillsDir)
 		toolSet.SetSkills(sm)
@@ -168,7 +179,7 @@ func main() {
 		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
 	}
 
-	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir)
+	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir, telemetryRuntime)
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

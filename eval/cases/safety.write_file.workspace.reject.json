@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "id": "safety.write_file.workspace.reject",
+  "category": "command-safety-boundaries",
+  "description": "Reject write_file traversal outside workspace",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "write_file",
+    "tool_args": {
+      "path": "../../escape.txt",
+      "content": "x"
+    },
+    "isolate_fs": true
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "error",
+      "value": "outside allowed workspace roots"
+    }
+  ]
+}

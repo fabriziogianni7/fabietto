@@ -44,9 +44,9 @@ func (g *HTTPGateway) Run(ctx context.Context, handler Handler) error {
 
 		incoming := IncomingMessage{
 			Platform: "http",
-			UserID:  req.UserID,
-			ChatID:  req.UserID, // echo back to same "chat"
-			Text:   strings.TrimSpace(req.Message),
+			UserID:   req.UserID,
+			ChatID:   req.UserID, // echo back to same "chat"
+			Text:     strings.TrimSpace(req.Message),
 		}
 
 		reply := handler(incoming)

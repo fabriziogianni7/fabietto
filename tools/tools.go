@@ -19,6 +19,7 @@ import (
 	"custom-agent/memory"
 	"custom-agent/reminders"
 	"custom-agent/skills"
+	"custom-agent/telemetry"
 	"custom-agent/x402client"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -30,12 +31,12 @@ var toolNames = []string{"run_command", "read_file", "write_file", "web_search",
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
-	"read_file":        true,
-	"web_search":       true,
-	"read_memory":      true,
-	"http_request":     true,
-	"list_skills":      true,
-	"read_skill":       true,
+	"read_file":         true,
+	"web_search":        true,
+	"read_memory":       true,
+	"http_request":      true,
+	"list_skills":       true,
+	"read_skill":        true,
 	"read_skill_script": true,
 }
 
@@ -71,10 +72,11 @@ type Tools struct {
 	BraveSearchAPIKey string
 	MemoryStore       *memory.Store
 	ReminderStore     *reminders.Store
-	Wallet            WalletService // optional; when set, wallet tools are available
+	Wallet            WalletService      // optional; when set, wallet tools are available
 	X402Client        *x402client.Client // optional; when set, http_request can pay for 402-protected APIs
-	Skills            SkillsManager // optional; when set, skills tools are available
-	LLMClient         *openai.Client // optional; when set, write_skill runs security/feasibility checks
+	Skills            SkillsManager      // optional; when set, skills tools are available
+	LLMClient         *openai.Client     // optional; when set, write_skill runs security/feasibility checks
+	Telemetry         *telemetry.Runtime // optional
 }
 
 // NewTools creates a Tools instance with the given Brave Search API key and optional memory store.
@@ -111,11 +113,17 @@ func (t *Tools) SetLLMClient(c *openai.Client) {
 	t.LLMClient = c
 }
 
+// SetTelemetry sets optional telemetry runtime used for tool call observability.
+func (t *Tools) SetTelemetry(rt *telemetry.Runtime) {
+	t.Telemetry = rt
+}
+
 // ParseToolCallFromContent extracts a tool call from model output when the model
 // returns tool format as text. Supports:
 //   - <write_file>{"path":"x","content":"y"}</function>
 //   - <function=web_search>{"query":"..."}</function>
 //   - (function=web_search>{"query":"..."}</function>  (model typo: ( instead of <)
+//
 // Returns name, args, and true if found.
 func ParseToolCallFromContent(content string) (name string, args string, ok bool) {
 	patterns := []string{
@@ -294,7 +302,7 @@ func Definitions() []openai.Tool {
 				Name:        "list_reminders",
 				Description: "List the user's scheduled reminders. Use when the user asks what reminders they have or to show their schedule.",
 				Parameters: jsonschema.Definition{
-					Type: jsonschema.Object,
+					Type:       jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{},
 				},
 			},
@@ -366,9 +374,9 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"to":         {Type: jsonschema.String, Description: "Recipient address (0x...)"},
+						"to":        {Type: jsonschema.String, Description: "Recipient address (0x...)"},
 						"value_wei": {Type: jsonschema.String, Description: "Amount in wei as decimal string"},
-						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+						"chain_id":  {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
 					Required: []string{"to", "value_wei"},
 				},
@@ -382,10 +390,10 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"to":         {Type: jsonschema.String, Description: "Contract address (0x...)"},
-						"data":       {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
+						"to":        {Type: jsonschema.String, Description: "Contract address (0x...)"},
+						"data":      {Type: jsonschema.String, Description: "Hex-encoded calldata (0x...)"},
 						"value_wei": {Type: jsonschema.String, Description: "ETH to send in wei (0 for none)"},
-						"chain_id":   {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+						"chain_id":  {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
 					Required: []string{"to", "data"},
 				},
@@ -411,7 +419,7 @@ func Definitions() []openai.Tool {
 				Name:        "list_skills",
 				Description: "List the names and short descriptions of all available skills. Use when you need to see what skills exist before deciding which to use.",
 				Parameters: jsonschema.Definition{
-					Type: jsonschema.Object,
+					Type:       jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{},
 				},
 			},
@@ -454,9 +462,9 @@ func Definitions() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						"name": {Type: jsonschema.String, Description: "Skill name (alphanumeric, hyphen, underscore only)"},
+						"name":     {Type: jsonschema.String, Description: "Skill name (alphanumeric, hyphen, underscore only)"},
 						"skill_md": {Type: jsonschema.String, Description: "Full SKILL.md content including YAML frontmatter"},
-						"scripts": {Type: jsonschema.Object, Description: "Optional map of relative path to content (e.g. {\"process.py\": \"...\"})"},
+						"scripts":  {Type: jsonschema.Object, Description: "Optional map of relative path to content (e.g. {\"process.py\": \"...\"})"},
 					},
 					Required: []string{"name", "skill_md"},
 				},
@@ -486,51 +494,90 @@ func DefinitionsForSubagent() []openai.Tool {
 // ExecuteTool runs the named tool with the given JSON arguments and returns the result.
 // For save_memory and read_memory, platform and userID must be injected by the caller via InjectMemoryArgs.
 func (t *Tools) ExecuteTool(name, argsJSON string) (string, error) {
+	return t.ExecuteToolWithContext(context.Background(), name, argsJSON)
+}
+
+// ExecuteToolWithContext runs tool execution with context for telemetry.
+func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON string) (string, error) {
+	start := time.Now()
+	if t.Telemetry != nil {
+		t.Telemetry.OnToolCallStart(ctx, name, argsJSON)
+	}
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		if t.Telemetry != nil {
+			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "")
+		}
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 	strArgs := toStringMap(args)
 
+	var out string
+	var err error
 	switch name {
 	case "run_command":
-		return runCommand(strArgs["command"])
+		out, err = runCommand(strArgs["command"])
 	case "read_file":
-		return readFile(strArgs["path"])
+		out, err = readFile(strArgs["path"])
 	case "write_file":
-		return writeFile(strArgs["path"], strArgs["content"])
+		out, err = writeFile(strArgs["path"], strArgs["content"])
 	case "web_search":
-		return t.webSearch(strArgs["query"])
+		out, err = t.webSearch(strArgs["query"])
 	case "save_memory":
-		return t.saveMemory(strArgs)
+		out, err = t.saveMemory(strArgs)
 	case "read_memory":
-		return t.readMemory(strArgs, args)
+		out, err = t.readMemory(strArgs, args)
 	case "create_scheduled_reminder":
-		return t.createScheduledReminder(strArgs)
+		out, err = t.createScheduledReminder(strArgs)
 	case "list_reminders":
-		return t.listReminders(strArgs)
+		out, err = t.listReminders(strArgs)
 	case "delete_reminder":
-		return t.deleteReminder(strArgs)
+		out, err = t.deleteReminder(strArgs)
 	case "http_request":
-		return t.httpRequest(strArgs, args)
+		out, err = t.httpRequest(strArgs, args)
 	case "wallet_get_balance":
-		return t.walletGetBalance(strArgs, args)
+		out, err = t.walletGetBalance(strArgs, args)
 	case "wallet_execute_transfer":
-		return t.walletExecuteTransfer(strArgs, args)
+		out, err = t.walletExecuteTransfer(strArgs, args)
 	case "wallet_execute_contract_call":
-		return t.walletExecuteContractCall(strArgs, args)
+		out, err = t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
-		return t.walletListTransactions(strArgs, args)
+		out, err = t.walletListTransactions(strArgs, args)
 	case "list_skills":
-		return t.listSkills()
+		out, err = t.listSkills()
 	case "read_skill":
-		return t.readSkill(strArgs, args)
+		out, err = t.readSkill(strArgs, args)
 	case "read_skill_script":
-		return t.readSkillScript(strArgs)
+		out, err = t.readSkillScript(strArgs)
 	case "write_skill":
-		return t.writeSkill(strArgs, args)
+		out, err = t.writeSkill(strArgs, args)
 	default:
-		return "", fmt.Errorf("unknown tool: %s", name)
+		err = fmt.Errorf("unknown tool: %s", name)
+	}
+	if t.Telemetry != nil {
+		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out)
+	}
+	return out, err
+}
+
+func categorizeToolError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "unknown tool"):
+		return "unknown_tool"
+	case strings.Contains(s, "invalid arguments"), strings.Contains(s, "invalid url"):
+		return "invalid_arguments"
+	case strings.Contains(s, "permission denied"), strings.Contains(s, "blocked"), strings.Contains(s, "approval"):
+		return "permission_denied"
+	case strings.Contains(s, "timeout"), strings.Contains(s, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(s, "not configured"):
+		return "not_configured"
+	default:
+		return "execution_error"
 	}
 }
 
@@ -953,7 +1000,7 @@ func (t *Tools) deleteReminder(args map[string]string) (string, error) {
 }
 
 const (
-	httpRequestMaxBody   = 64 * 1024 // 64KB
+	httpRequestMaxBody  = 64 * 1024 // 64KB
 	httpRequestTimeout  = 30 * time.Second
 	httpRequestRedactHd = "authorization,cookie,x-api-key,x-auth-token"
 )
@@ -1063,32 +1110,33 @@ func (t *Tools) httpRequest(args map[string]string, rawArgs map[string]interface
 }
 
 func runCommand(command string) (string, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", fmt.Errorf("empty command")
+	parsed, err := parseCommand(command)
+	if err != nil {
+		return "Permission denied: " + err.Error(), nil
 	}
-
-	if IsBlocked(command) {
+	if !isAllowedExecutable(parsed.Executable) {
+		return "Permission denied: executable is not in the allowlist.", nil
+	}
+	if IsBlocked(parsed.Identity) {
 		return "Permission denied: command is blocked for safety.", nil
 	}
-
-	if IsSafe(command) {
-		return executeCommand(command)
+	if !needsApproval(parsed.Executable) {
+		return executeCommand(parsed)
 	}
 
 	approved, err := LoadApprovals()
 	if err != nil {
 		return "", fmt.Errorf("failed to load approvals: %w", err)
 	}
-	if IsApproved(command, approved) {
-		return executeCommand(command)
+	if IsApproved(parsed.Identity, approved) {
+		return executeCommand(parsed)
 	}
 
-	return "Permission denied. User can approve by saying 'approve: " + command + "' in chat.", nil
+	return "Permission denied. User can approve by saying 'approve: " + parsed.Identity + "' in chat.", nil
 }
 
-func executeCommand(command string) (string, error) {
-	cmd := exec.Command("sh", "-c", command)
+func executeCommand(parsed parsedCommand) (string, error) {
+	cmd := exec.Command(parsed.Executable, parsed.Args...)
 	cmd.Dir = getWorkDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1108,7 +1156,10 @@ func executeCommand(command string) (string, error) {
 }
 
 func readFile(path string) (string, error) {
-	path = resolvePath(path)
+	path, err := resolvePathWithinWorkspace(path, false)
+	if err != nil {
+		return "", fmt.Errorf("read failed: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
@@ -1117,7 +1168,10 @@ func readFile(path string) (string, error) {
 }
 
 func writeFile(path, content string) (string, error) {
-	path = resolvePath(path)
+	path, err := resolvePathWithinWorkspace(path, true)
+	if err != nil {
+		return "", fmt.Errorf("write failed: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("mkdir failed: %w", err)
 	}

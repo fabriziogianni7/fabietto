@@ -1,0 +1,20 @@
+{
+  "schema_version": "v1",
+  "id": "tool.execute.read_memory.missing.ctx",
+  "category": "tool-calling-correctness",
+  "description": "read_memory fails gracefully when memory store is absent",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "read_memory",
+    "tool_args": {
+      "query": "x"
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "Memory not configured"
+    }
+  ]
+}

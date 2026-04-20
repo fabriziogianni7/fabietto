@@ -1,0 +1,21 @@
+{
+  "schema_version": "v1",
+  "id": "safety.read_file.workspace.reject",
+  "category": "command-safety-boundaries",
+  "description": "Reject read_file outside workspace roots",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "read_file",
+    "tool_args": {
+      "path": "/etc/passwd"
+    },
+    "isolate_fs": true
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "error",
+      "value": "outside allowed workspace roots"
+    }
+  ]
+}

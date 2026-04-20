@@ -1,0 +1,32 @@
+{
+  "schema_version": "v1",
+  "id": "compaction.prompt.block.delimiters",
+  "category": "compaction-sensitive-flow",
+  "description": "Prompt block includes deterministic delimiters",
+  "operation": {
+    "type": "compaction_prompt_block",
+    "context": {
+      "session_intent": "Ship eval harness",
+      "pending_actions": [
+        "add CI"
+      ]
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "block",
+      "value": "--- Prior context (compacted) ---"
+    },
+    {
+      "type": "contains",
+      "key": "block",
+      "value": "--- End prior context ---"
+    },
+    {
+      "type": "contains",
+      "key": "block",
+      "value": "session_intent"
+    }
+  ]
+}

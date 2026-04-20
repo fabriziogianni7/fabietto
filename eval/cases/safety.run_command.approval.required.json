@@ -1,0 +1,20 @@
+{
+  "schema_version": "v1",
+  "id": "safety.run_command.approval.required",
+  "category": "command-safety-boundaries",
+  "description": "Require approval for make command",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "run_command",
+    "tool_args": {
+      "command": "make test"
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "approve:"
+    }
+  ]
+}

@@ -15,7 +15,8 @@ const (
 // NewFromBackend creates a Signer from the given backend name and options.
 // backend: "env", "kms", "hsm"
 // opts: backend-specific. For "env": opts["env_key"] (default "WALLET_PRIVATE_KEY").
-//       For "kms"/"hsm": key ID, region, etc. (to be implemented).
+//
+//	For "kms"/"hsm": key ID, region, etc. (to be implemented).
 func NewFromBackend(backend string, opts map[string]string) (Signer, error) {
 	b := strings.ToLower(strings.TrimSpace(backend))
 	if b == "" {

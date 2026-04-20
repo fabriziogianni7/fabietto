@@ -28,13 +28,6 @@ func init() {
 	blockedPatterns = append(blockedPatterns, redact.BlockedPatternsForPrompts...)
 }
 
-// Safe commands that run without approval (exact match of first word).
-// echo is removed: it can exfiltrate env vars (e.g. echo $PRIVATE_KEY).
-var safeCommands = []string{
-	"ls", "pwd", "whoami", "date", "id",
-	"head", "tail", "wc", "file",
-}
-
 // LoadApprovals reads approved commands from exec-approvals.json.
 func LoadApprovals() ([]string, error) {
 	data, err := os.ReadFile(approvalsFile)
@@ -85,25 +78,26 @@ func IsBlocked(cmd string) bool {
 
 // IsSafe returns true if the command is in the safe allowlist.
 func IsSafe(cmd string) bool {
-	cmd = strings.TrimSpace(cmd)
-	first := strings.Fields(cmd)
-	if len(first) == 0 {
+	parsed, err := parseCommand(cmd)
+	if err != nil {
 		return false
 	}
-	base := strings.ToLower(first[0])
-	for _, s := range safeCommands {
-		if base == s {
-			return true
-		}
-	}
-	return false
+	return autoAllowedCommands[parsed.Executable]
 }
 
 // IsApproved returns true if the command is in the approved list (exact match).
 func IsApproved(cmd string, approved []string) bool {
-	cmd = normalizeCommand(cmd)
+	parsed, err := parseCommand(cmd)
+	if err != nil {
+		return false
+	}
+	cmd = parsed.Identity
 	for _, a := range approved {
-		if normalizeCommand(a) == cmd {
+		parsedApproved, err := parseCommand(a)
+		if err != nil {
+			continue
+		}
+		if parsedApproved.Identity == cmd {
 			return true
 		}
 	}
@@ -112,26 +106,33 @@ func IsApproved(cmd string, approved []string) bool {
 
 // ApproveCommand adds a command to the approvals file if not already present.
 func ApproveCommand(cmd string) error {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return fmt.Errorf("empty command")
+	parsed, err := parseCommand(cmd)
+	if err != nil {
+		return err
 	}
-	if IsBlocked(cmd) {
+	if !isAllowedExecutable(parsed.Executable) || !needsApproval(parsed.Executable) {
+		return fmt.Errorf("cannot approve command outside approval allowlist")
+	}
+	if IsBlocked(parsed.Identity) {
 		return fmt.Errorf("cannot approve blocked command")
 	}
 	approved, err := LoadApprovals()
 	if err != nil {
 		return err
 	}
-	if IsApproved(cmd, approved) {
+	if IsApproved(parsed.Identity, approved) {
 		return nil // already approved
 	}
-	approved = append(approved, cmd)
+	approved = append(approved, parsed.Identity)
 	return SaveApprovals(approved)
 }
 
 func normalizeCommand(cmd string) string {
-	return strings.TrimSpace(strings.Join(strings.Fields(cmd), " "))
+	parsed, err := parseCommand(cmd)
+	if err != nil {
+		return strings.TrimSpace(strings.Join(strings.Fields(cmd), " "))
+	}
+	return parsed.Identity
 }
 
 // ParseApprovalMessage extracts a command from "approve: <cmd>" or "/approve <cmd>".

@@ -1,0 +1,18 @@
+{
+  "schema_version": "v1",
+  "id": "tool.execute.unknown.tool.error",
+  "category": "tool-calling-correctness",
+  "description": "Unknown execute tool returns error",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "not_a_tool",
+    "tool_args": {}
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "error",
+      "value": "unknown tool"
+    }
+  ]
+}

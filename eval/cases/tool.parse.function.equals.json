@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "id": "tool.parse.function.equals",
+  "category": "tool-calling-correctness",
+  "description": "Parse function=tool format",
+  "operation": {
+    "type": "tool_parse",
+    "content": "<function=web_search>{\"query\":\"golang\"}</function>"
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "ok",
+      "value": true
+    },
+    {
+      "type": "equals",
+      "key": "tool_name",
+      "value": "web_search"
+    }
+  ]
+}

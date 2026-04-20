@@ -1,0 +1,34 @@
+{
+  "schema_version": "v1",
+  "id": "memory.embed.fail.fallback.keyword",
+  "category": "memory-retrieval-fallback",
+  "description": "Embedding failure falls back to keyword search",
+  "operation": {
+    "type": "memory_search",
+    "embedder_mode": "fail",
+    "query": "router",
+    "limit": 5,
+    "memories": [
+      {
+        "content": "Home router password rotated",
+        "tags": "ops"
+      },
+      {
+        "content": "Favorite tea is oolong",
+        "tags": "drink"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "result_count",
+      "value": 1
+    },
+    {
+      "type": "contains",
+      "key": "result_contents",
+      "value": "router"
+    }
+  ]
+}

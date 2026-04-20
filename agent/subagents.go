@@ -9,6 +9,7 @@ import (
 
 	"custom-agent/gateway"
 	"custom-agent/session"
+	"custom-agent/telemetry"
 	"custom-agent/tools"
 
 	"github.com/sashabaranov/go-openai"
@@ -18,7 +19,7 @@ import (
 const (
 	defaultMaxConcurrency   = 4
 	defaultPerChildTimeout  = 20 * time.Second
-	defaultMaxChildCount     = 10
+	defaultMaxChildCount    = 10
 	subagentMaxToolRounds   = 5
 	subagentRoleInstruction = "You are a focused sub-agent. Answer only the given task. Use read_file, web_search, and read_memory as needed. Do not save memory or schedule reminders."
 )
@@ -182,7 +183,19 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 					})
 					continue
 				}
-				result, err := a.tools.ExecuteTool(tc.Function.Name, args)
+				toolCtx := subCtx
+				if a.telemetry != nil {
+					tr := &telemetry.TurnRecorder{
+						RunID:     "subagent",
+						SessionID: session.SessionKey(msg.Platform, msg.UserID),
+						Platform:  msg.Platform,
+						Model:     subagentModelForIndex(spec.Index),
+						Gateway:   "subagent",
+						StartedAt: time.Now().UTC(),
+					}
+					toolCtx = a.telemetry.WithTurn(subCtx, tr)
+				}
+				result, err := a.tools.ExecuteToolWithContext(toolCtx, tc.Function.Name, args)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
@@ -213,7 +226,19 @@ func (a *Agent) runOneSubagent(ctx context.Context, spec SubtaskSpec, msg gatewa
 					Name:       toolName,
 				})
 			} else {
-				result, err := a.tools.ExecuteTool(toolName, toolArgs)
+				toolCtx := subCtx
+				if a.telemetry != nil {
+					tr := &telemetry.TurnRecorder{
+						RunID:     "subagent",
+						SessionID: session.SessionKey(msg.Platform, msg.UserID),
+						Platform:  msg.Platform,
+						Model:     subagentModelForIndex(spec.Index),
+						Gateway:   "subagent",
+						StartedAt: time.Now().UTC(),
+					}
+					toolCtx = a.telemetry.WithTurn(subCtx, tr)
+				}
+				result, err := a.tools.ExecuteToolWithContext(toolCtx, toolName, toolArgs)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
@@ -255,7 +280,7 @@ func FormatSubagentResults(results []SubtaskResult) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-			b.WriteString("Task ")
+		b.WriteString("Task ")
 		b.WriteString(fmt.Sprintf("%d", i+1))
 		b.WriteString(": ")
 		b.WriteString(": ")

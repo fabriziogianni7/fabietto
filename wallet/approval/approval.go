@@ -14,24 +14,24 @@ import (
 
 // Pending holds a pending approval request.
 type Pending struct {
-	ID          string           `json:"id"`
-	Action      *account.Action  `json:"action"`
-	ChainID     int64            `json:"chain_id"`
-	Summary     string           `json:"summary"`
-	Platform    string           `json:"platform"`
-	UserID      string           `json:"user_id"`
-	ChatID      string           `json:"chat_id"`
-	CreatedAt   time.Time        `json:"created_at"`
-	ExpiresAt   time.Time        `json:"expires_at"`
-	Simulation  string           `json:"simulation,omitempty"`
+	ID         string          `json:"id"`
+	Action     *account.Action `json:"action"`
+	ChainID    int64           `json:"chain_id"`
+	Summary    string          `json:"summary"`
+	Platform   string          `json:"platform"`
+	UserID     string          `json:"user_id"`
+	ChatID     string          `json:"chat_id"`
+	CreatedAt  time.Time       `json:"created_at"`
+	ExpiresAt  time.Time       `json:"expires_at"`
+	Simulation string          `json:"simulation,omitempty"`
 }
 
 // Store manages pending approvals with TTL.
 type Store struct {
-	mu       sync.RWMutex
-	pending  map[string]*Pending
-	dir      string
-	ttl      time.Duration
+	mu      sync.RWMutex
+	pending map[string]*Pending
+	dir     string
+	ttl     time.Duration
 }
 
 // NewStore creates an approval store. dir is for persistence (optional); ttl is default expiry.

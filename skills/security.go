@@ -10,9 +10,9 @@ import (
 
 // SecurityResult holds the result of a security check.
 type SecurityResult struct {
-	Safe    bool     `json:"safe"`
-	Severity string  `json:"severity"` // low, medium, high
-	Issues  []string `json:"issues"`
+	Safe     bool     `json:"safe"`
+	Severity string   `json:"severity"` // low, medium, high
+	Issues   []string `json:"issues"`
 }
 
 // RunSecurityCheck calls the LLM to evaluate skill content for security issues.

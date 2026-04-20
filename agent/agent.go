@@ -13,6 +13,7 @@ import (
 	"custom-agent/memory"
 	"custom-agent/session"
 	"custom-agent/skills"
+	"custom-agent/telemetry"
 	"custom-agent/tools"
 	"custom-agent/wallet/redact"
 
@@ -48,12 +49,13 @@ type Agent struct {
 	convStore    *conversation.Store
 	skillsDir    string
 	skillsMgr    *skills.Manager
+	telemetry    *telemetry.Runtime
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
 // tokenThreshold: when context exceeds this (approx tokens), compaction is triggered. 0 = default (4000).
 // skillsDir: optional path to skills directory; when set, skill descriptions are injected into system prompt.
-func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string) *Agent {
+func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet *tools.Tools, convStore *conversation.Store, skillsDir string, telem *telemetry.Runtime) *Agent {
 	var skillsMgr *skills.Manager
 	if skillsDir != "" {
 		skillsMgr = skills.NewManager(skillsDir)
@@ -67,28 +69,47 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 		convStore:    convStore,
 		skillsDir:    skillsDir,
 		skillsMgr:    skillsMgr,
+		telemetry:    telem,
 	}
 }
 
 // HandleMessage processes an incoming message and returns the reply.
 func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) string {
 	text := strings.TrimSpace(msg.Text)
+	finalReply := ""
 	if text == "" {
-		return "Hello! Send me a message and I'll respond."
+		finalReply = "Hello! Send me a message and I'll respond."
+		return finalReply
+	}
+	sessionID := session.SessionKey(msg.Platform, msg.UserID)
+	var turn *telemetry.TurnRecorder
+	if a.telemetry != nil {
+		turn = a.telemetry.StartTurn(msg.Platform, sessionID, parentModel, msg.Platform)
+		ctx = a.telemetry.WithTurn(ctx, turn)
+		turn.AddTranscript(telemetry.TranscriptEntry{Role: "user", Content: text, Kind: "user_message"})
+		defer func() {
+			if finalReply == "" {
+				finalReply = "(no final response)"
+			}
+			a.telemetry.FinishTurn(turn, finalReply)
+		}()
 	}
 
 	// Handle newSkill command (interactive flow)
 	if handled, res := a.handleNewSkill(ctx, text, msg.Platform, msg.UserID); handled {
-		return res
+		finalReply = res
+		return finalReply
 	}
 
 	// Handle /new command
 	if text == "/new" {
 		if err := session.Clear(msg.Platform, msg.UserID); err != nil {
-			return "Failed to clear session: " + err.Error()
+			finalReply = "Failed to clear session: " + err.Error()
+			return finalReply
 		}
 		_ = conversation.Clear(msg.Platform, msg.UserID)
-		return "Session cleared. Starting fresh!"
+		finalReply = "Session cleared. Starting fresh!"
+		return finalReply
 	}
 
 	// Proactive save when user explicitly says "remember" or "memorize"
@@ -105,12 +126,15 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	// Handle approval messages
 	if cmd, ok := tools.ParseApprovalMessage(text); ok {
 		if handled, result := a.tools.TryWalletApproval(ctx, cmd, msg.Platform, msg.UserID, msg.ChatID); handled {
-			return result
+			finalReply = result
+			return finalReply
 		}
 		if err := tools.ApproveCommand(cmd); err != nil {
-			return "Approval failed: " + err.Error()
+			finalReply = "Approval failed: " + err.Error()
+			return finalReply
 		}
-		return "Approved."
+		finalReply = "Approved."
+		return finalReply
 	}
 
 	history, err := session.Load(msg.Platform, msg.UserID)
@@ -119,6 +143,10 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	}
 
 	// Threshold-based compaction: summarize old context when it exceeds limit
+	totalTokens := compaction.EstimateTokens(history)
+	if a.telemetry != nil {
+		a.telemetry.RecordCompactionDecision(ctx, totalTokens > a.compactor.Threshold(), totalTokens, a.compactor.Threshold())
+	}
 	summaryBlock, recent, _ := a.compactor.CompactIfNeeded(ctx, history, a.systemPrompt)
 	if recent == nil {
 		recent = session.Recent(history)
@@ -142,11 +170,21 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			}
 			b.WriteString("--- End memories ---")
 			contextBlocks = append(contextBlocks, b.String())
+			if a.telemetry != nil {
+				a.telemetry.RecordMemoryDecision(ctx, "memory", text, len(mems), a.memoryStore.SearchMode())
+			}
+		} else if a.telemetry != nil {
+			a.telemetry.RecordMemoryDecision(ctx, "memory", text, 0, a.memoryStore.SearchMode())
 		}
 	}
 	if a.convStore != nil {
 		if entries, err := a.convStore.Search(msg.Platform, msg.UserID, text, 5); err == nil && len(entries) > 0 {
 			contextBlocks = append(contextBlocks, conversation.FormatEntries(entries))
+			if a.telemetry != nil {
+				a.telemetry.RecordMemoryDecision(ctx, "conversation", text, len(entries), "embedding_or_keyword")
+			}
+		} else if a.telemetry != nil {
+			a.telemetry.RecordMemoryDecision(ctx, "conversation", text, 0, "embedding_or_keyword")
 		}
 	}
 
@@ -209,11 +247,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		})
 		if err != nil {
 			log.Printf("[agent] LLM error: %v", err)
-			return "Sorry, I couldn't process that. Please try again."
+			finalReply = "Sorry, I couldn't process that. Please try again."
+			return finalReply
 		}
 
 		if len(resp.Choices) == 0 {
-			return "I didn't get a response. Try again?"
+			finalReply = "I didn't get a response. Try again?"
+			return finalReply
 		}
 
 		msgResp := resp.Choices[0].Message
@@ -246,7 +286,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 						}
 					}
 					var err error
-					result, err = a.tools.ExecuteTool(tc.Function.Name, args)
+					result, err = a.tools.ExecuteToolWithContext(ctx, tc.Function.Name, args)
 					if err != nil {
 						result = "Error: " + err.Error()
 					}
@@ -262,6 +302,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 
 		// Fallback: model returned tool format as text
 		if toolName, toolArgs, ok := tools.ParseToolCallFromContent(msgResp.Content); ok {
+			if a.telemetry != nil {
+				a.telemetry.RecordFallbackParser(ctx, true)
+			}
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
@@ -289,7 +332,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 					}
 				}
 				var err error
-				result, err = a.tools.ExecuteTool(toolName, toolArgs)
+				result, err = a.tools.ExecuteToolWithContext(ctx, toolName, toolArgs)
 				if err != nil {
 					result = "Error: " + err.Error()
 				}
@@ -306,11 +349,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		// Final text response
 		reply := strings.TrimSpace(msgResp.Content)
 		if reply == "" {
-			return "I didn't get a response. Try again?"
+			finalReply = "I didn't get a response. Try again?"
+			return finalReply
 		}
 		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
 			messages = append(messages, openai.ChatCompletionMessage{
-				Role: openai.ChatMessageRoleSystem,
+				Role:    openai.ChatMessageRoleSystem,
 				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
 			})
 			continue
@@ -320,10 +364,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 			_ = a.convStore.Add(msg.Platform, msg.UserID, "user", text)
 			_ = a.convStore.Add(msg.Platform, msg.UserID, "assistant", reply)
 		}
-		return reply
+		finalReply = reply
+		return finalReply
 	}
 
-	return "I hit the tool limit. Please try a simpler request."
+	finalReply = "I hit the tool limit. Please try a simpler request."
+	return finalReply
 }
 
 var (

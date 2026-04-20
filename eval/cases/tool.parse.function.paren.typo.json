@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "id": "tool.parse.function.paren.typo",
+  "category": "tool-calling-correctness",
+  "description": "Parse model typo with opening paren",
+  "operation": {
+    "type": "tool_parse",
+    "content": "(function=read_memory>{\"query\":\"pizza\"}</function>"
+  },
+  "assertions": [
+    {
+      "type": "equals",
+      "key": "ok",
+      "value": true
+    },
+    {
+      "type": "equals",
+      "key": "tool_name",
+      "value": "read_memory"
+    }
+  ]
+}
