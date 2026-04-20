@@ -17,6 +17,7 @@ import (
 	"custom-agent/conversation"
 	"custom-agent/embedding"
 	"custom-agent/gateway"
+	"custom-agent/handbook"
 	"custom-agent/memory"
 	"custom-agent/reminders"
 	"custom-agent/sessionqueue"
@@ -40,18 +41,22 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	personality, err := os.ReadFile("PERSONALITY.md")
+	handbookRoot := strings.TrimSpace(os.Getenv("AGENT_HANDBOOK_DIR"))
+	if handbookRoot == "" {
+		handbookRoot = "agent-handbook"
+	}
+	var exclude map[string]bool
+	if !cfg.WalletEnabled() {
+		exclude = map[string]bool{"capabilities/wallet.md": true}
+	}
+	handbookText, err := handbook.Load(handbookRoot, exclude)
 	if err != nil {
-		log.Fatalf("failed to load PERSONALITY.md: %v", err)
+		log.Fatalf("handbook: %v", err)
 	}
-	toolInstruction := "\n\nYou have access to tools. Use them when they help answer the user's question—for example, read files, run commands, search the web, use memory (save_memory, read_memory), schedule reminders (create_scheduled_reminder, list_reminders, delete_reminder), spawn parallel sub-agents (spawn_subagents), or http_request for HTTP APIs. When a task can be parallelized, use spawn_subagents."
+	systemPrompt := handbookText
 	if cfg.SkillsDir != "" {
-		toolInstruction += " When the user asks to add, create, or install a skill (even without saying newSkill), compose the SKILL.md content with YAML frontmatter and body, then use write_skill. The tool automatically runs security and feasibility checks before saving."
+		systemPrompt += "\n\nWhen the user asks to add, create, or install a skill (even without saying newSkill), compose the SKILL.md content with YAML frontmatter and body, then use write_skill. The tool automatically runs security and feasibility checks before saving."
 	}
-	if cfg.WalletEnabled() {
-		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
-	}
-	toolInstruction += "\n"
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
 	llmConfig.BaseURL = "https://api.groq.com/openai/v1"
@@ -167,17 +172,11 @@ func main() {
 		log.Printf("[wallet] enabled, address %s, default chain %d, backend=%s", walletSvc.WalletAddress(), walletSvc.DefaultChainID(), cfg.WalletSignerBackend)
 	}
 
-	// Build system prompt: personality + tools, then append WALLET.md when wallet is enabled
-	systemPrompt := strings.TrimSpace(string(personality)) + toolInstruction
 	if toolSet.Wallet != nil {
-		walletDoc, err := os.ReadFile("WALLET.md")
-		if err != nil {
-			log.Fatalf("failed to load WALLET.md: %v", err)
-		}
-		walletBlock := strings.Replace(string(walletDoc), "{{WALLET_ADDRESS}}", toolSet.Wallet.WalletAddress(), 1)
-		walletBlock = strings.Replace(walletBlock, "{{DEFAULT_CHAIN_ID}}", strconv.FormatInt(toolSet.Wallet.DefaultChainID(), 10), 1)
-		systemPrompt += "\n\n" + strings.TrimSpace(walletBlock)
+		systemPrompt = strings.Replace(systemPrompt, "{{WALLET_ADDRESS}}", toolSet.Wallet.WalletAddress(), 1)
+		systemPrompt = strings.Replace(systemPrompt, "{{DEFAULT_CHAIN_ID}}", strconv.FormatInt(toolSet.Wallet.DefaultChainID(), 10), 1)
 	}
+	systemPrompt = strings.TrimSpace(systemPrompt)
 
 	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir, telemetryRuntime)
 
