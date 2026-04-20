@@ -100,6 +100,38 @@ func TestApproveCommandRejectsNonApprovalAllowlistExecutable(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ApprovalDenyApproveExecuteCycle(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get wd: %v", err)
+	}
+	tempWD := t.TempDir()
+	if err := os.Chdir(tempWD); err != nil {
+		t.Fatalf("failed to chdir temp dir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	denied, err := runCommand("go version")
+	if err != nil {
+		t.Fatalf("unexpected deny error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(denied), "permission denied") {
+		t.Fatalf("expected denial before approval, got %q", denied)
+	}
+
+	if err := ApproveCommand("go version"); err != nil {
+		t.Fatalf("approve command failed: %v", err)
+	}
+
+	executed, err := runCommand("go version")
+	if err != nil {
+		t.Fatalf("unexpected execution error after approval: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(executed), "go version") {
+		t.Fatalf("expected go version output after approval, got %q", executed)
+	}
+}
+
 func mustLoadApprovals(t *testing.T) []string {
 	t.Helper()
 	approved, err := LoadApprovals()

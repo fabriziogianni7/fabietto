@@ -101,3 +101,28 @@ func TestProcess_ConcurrentSessions(t *testing.T) {
 		t.Errorf("expected both finished, got %d", finished)
 	}
 }
+
+// TestProcess_WorkerRecoversAfterPanic verifies panic isolation and continued FIFO processing.
+func TestProcess_WorkerRecoversAfterPanic(t *testing.T) {
+	var calls int32
+	handler := func(msg gateway.IncomingMessage) string {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			panic("boom")
+		}
+		return "ok-" + msg.Text
+	}
+	q := New(handler)
+
+	msgBase := gateway.IncomingMessage{Platform: "test", UserID: "panic-user"}
+
+	first := q.Process(gateway.IncomingMessage{Platform: msgBase.Platform, UserID: msgBase.UserID, Text: "first"})
+	if first != "Sorry, something went wrong. Please try again." {
+		t.Fatalf("unexpected first response after panic: %q", first)
+	}
+
+	second := q.Process(gateway.IncomingMessage{Platform: msgBase.Platform, UserID: msgBase.UserID, Text: "second"})
+	if second != "ok-second" {
+		t.Fatalf("worker did not recover after panic, got %q", second)
+	}
+}

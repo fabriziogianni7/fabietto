@@ -282,6 +282,7 @@ See `skills/README.md` for format and script language policy.
   - `make fmt-check` verifies formatting (`gofmt -l .`)
   - `make vet` runs static checks (`go vet ./...`)
   - `make test` runs unit tests (`go test ./...`)
+  - Reliability/regression-depth suite only: `go test ./agent ./tools ./memory ./compaction ./sessionqueue`
 - **Add tools**: Define and implement in `tools/tools.go`; register in the tool set passed to the agent
 - **Add gateways**: Implement the `gateway.Gateway` interface in `gateway/` and wire it in `main.go`
 - **Code style**: Standard Go formatting (`gofmt`). Keep packages focused; wallet, reminders, and compaction are modular
