@@ -6,6 +6,8 @@ Default chain: {{DEFAULT_CHAIN_ID}} (omit `chain_id` in tools to use this chain)
 
 Use this address when the user asks to receive funds, or when sharing it for receiving payments.
 
+With the wallet configured, you can use `wallet_get_balance`, `wallet_execute_transfer`, `wallet_execute_contract_call`, and `wallet_list_transactions`. You MUST call `wallet_execute_transfer` or `wallet_execute_contract_call` to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with `approve: <tx_id>` when prompted. With the wallet enabled, `http_request` can automatically pay for x402-protected APIs (402 Payment Required).
+
 ### CRITICAL: You must use tools to send transactions
 
 You CANNOT send transactions by saying you did. You MUST call `wallet_execute_transfer` or `wallet_execute_contract_call` when the user asks to send ETH or execute a contract. Never claim a transaction was sent unless you have actually invoked the tool and received a tx hash in the response. If you respond without calling the tool, no transaction occurs.

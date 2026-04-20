@@ -9,7 +9,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Run locally](#run-locally)
 - [Setup](#setup)
 - [Tools](#tools)
-- [Personality](#personality)
+- [Identity](#identity)
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
@@ -118,9 +118,13 @@ The agent loop runs until the LLM returns a final text response or hits the tool
 
 ---
 
-## Personality
+## Identity
 
-Edit `PERSONALITY.md` to define the bot's persona. Its contents are injected as the system prompt at startup. Change the tone, style, or add rules—the bot will adopt whatever you write.
+The system prompt is built from the **agent handbook** under `agent-handbook/` (see `manifest.txt` for file order). Edit `agent-handbook/identity.md` for persona and tone.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `AGENT_HANDBOOK_DIR` | `agent-handbook` | Root directory containing `manifest.txt` and the markdown files listed there |
 
 ---
 
@@ -276,7 +280,7 @@ Optional EVM wallet support. When `EVM_RPC_URL` and `WALLET_PRIVATE_KEY` (or sig
 | `WALLET_NATIVE_SPEND_LIMIT` | Wei string; transactions above this require user approval |
 | `WALLET_CHAINS` | JSON array for multichain: `[{"chain_id":1,"rpc_url":"...","explorer":"...","name":"Ethereum"}]` |
 
-See `WALLET.md` for tool usage. Transactions above the spend limit trigger a notification; the user must reply `approve: tx_<id>` to execute.
+See `agent-handbook/capabilities/wallet.md` for tool usage (that file is included in the system prompt when the wallet is enabled). Transactions above the spend limit trigger a notification; the user must reply `approve: tx_<id>` to execute.
 
 **x402 buyer:** When the wallet is enabled (env backend), the `http_request` tool can automatically pay for APIs that return 402 Payment Required. The agent uses the same wallet to sign x402 payment payloads.
 
@@ -430,9 +434,8 @@ custom-agent/
 ├── wallet-history/        # transaction history
 ├── .env
 ├── .env.example
+├── agent-handbook/        # system prompt vault (manifest.txt + markdown sources)
 ├── go.mod
 ├── main.go
-├── PERSONALITY.md         # bot persona (system prompt)
-├── WALLET.md              # wallet tool instructions (injected when wallet enabled)
 └── README.md
 ```

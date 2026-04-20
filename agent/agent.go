@@ -129,6 +129,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		return finalReply
 	}
 
+	// /remember and NL "save this chat" — promote session tail to long-term memory (before single-fact remember)
+	if reply, handled := a.trySessionRemember(text, msg.Platform, msg.UserID); handled {
+		finalReply = reply
+		return finalReply
+	}
+
 	// Proactive save when user explicitly says "remember" or "memorize"
 	if a.memoryStore != nil {
 		if content := extractRememberContent(text); content != "" {
