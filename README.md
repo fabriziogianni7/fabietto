@@ -126,8 +126,6 @@ The system prompt is built from the **agent handbook** under `agent-handbook/` (
 |---------|---------|-------------|
 | `AGENT_HANDBOOK_DIR` | `agent-handbook` | Root directory containing `manifest.txt` and the markdown files listed there |
 
-The root `PERSONALITY.md` file only points to the handbook for editors browsing the repo.
-
 ---
 
 ## Gateways
@@ -406,7 +404,5 @@ custom-agent/
 ├── agent-handbook/        # system prompt vault (manifest.txt + markdown sources)
 ├── go.mod
 ├── main.go
-├── PERSONALITY.md         # pointer to agent-handbook/personality.md
-├── WALLET.md              # pointer to agent-handbook/capabilities/wallet.md
 └── README.md
 ```
