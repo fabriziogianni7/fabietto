@@ -1,5 +1,5 @@
 # Concatenation order for the system prompt (one path per line, relative to agent-handbook/)
 00-index.md
-personality.md
+identity.md
 capabilities/tools.md
 capabilities/wallet.md

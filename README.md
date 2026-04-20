@@ -9,7 +9,7 @@ A Go-based AI agent that responds to messages via multiple gateways (Telegram, D
 - [Run locally](#run-locally)
 - [Setup](#setup)
 - [Tools](#tools)
-- [Personality](#personality)
+- [Identity](#identity)
 - [Gateways](#gateways)
 - [Context compaction](#context-compaction)
 - [Long-term memory & embeddings](#long-term-memory--embeddings)
@@ -118,9 +118,9 @@ The agent loop runs until the LLM returns a final text response or hits the tool
 
 ---
 
-## Personality
+## Identity
 
-The system prompt is built from the **agent handbook** under `agent-handbook/` (see `manifest.txt` for file order). Edit `agent-handbook/personality.md` for persona and tone.
+The system prompt is built from the **agent handbook** under `agent-handbook/` (see `manifest.txt` for file order). Edit `agent-handbook/identity.md` for persona and tone.
 
 | Env var | Default | Description |
 |---------|---------|-------------|
