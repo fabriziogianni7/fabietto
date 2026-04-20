@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	parentModel   = "moonshotai/kimi-k2-instruct-0905"
+	parentModel   = "openai/gpt-oss-120b"
 	maxToolRounds = 10
 )
 
@@ -42,14 +42,14 @@ func subagentModelForIndex(idx int) string {
 
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
-	client       *openai.Client
-	systemPrompt string
-	compactor    *compaction.Compactor
-	tools        *tools.Tools
-	memoryStore  *memory.Store
-	convStore    *conversation.Store
-	skillsDir    string
-	skillsMgr    *skills.Manager
+	client        *openai.Client
+	systemPrompt  string
+	compactor     *compaction.Compactor
+	tools         *tools.Tools
+	memoryStore   *memory.Store
+	convStore     *conversation.Store
+	skillsDir     string
+	skillsMgr     *skills.Manager
 	telemetry     *telemetry.Runtime
 	planner       planning.RuntimeConfig
 	orchestration planning.OrchestrationRuntime
@@ -64,14 +64,14 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 		skillsMgr = skills.NewManager(skillsDir)
 	}
 	return &Agent{
-		client:       client,
-		systemPrompt: systemPrompt,
-		compactor:    compaction.NewCompactor(client, parentModel, tokenThreshold),
-		tools:        toolSet,
-		memoryStore:  toolSet.MemoryStore,
-		convStore:    convStore,
-		skillsDir:    skillsDir,
-		skillsMgr:    skillsMgr,
+		client:        client,
+		systemPrompt:  systemPrompt,
+		compactor:     compaction.NewCompactor(client, parentModel, tokenThreshold),
+		tools:         toolSet,
+		memoryStore:   toolSet.MemoryStore,
+		convStore:     convStore,
+		skillsDir:     skillsDir,
+		skillsMgr:     skillsMgr,
 		telemetry:     telem,
 		planner:       planning.RuntimeConfig{Enabled: false},
 		orchestration: planning.OrchestrationRuntime{Mode: planning.OrchestrationModeOff},
