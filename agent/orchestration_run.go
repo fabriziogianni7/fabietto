@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"custom-agent/agent/planning"
 	"custom-agent/gateway"
@@ -21,8 +22,9 @@ const maxOrchestrationStepRounds = 14
 var orchestrationHTTPRetryStatus = regexp.MustCompile(`(?i)Status:\s+(4\d\d|5\d\d)\s`)
 
 // tryGeneralOrchestration builds a plan via LLM, validates, executes steps, optional synthesis.
-// Returns ("", false) to use the reactive loop.
-func (a *Agent) tryGeneralOrchestration(ctx context.Context, msg gateway.IncomingMessage, userText string) (string, bool) {
+// contextPrefix matches the reactive loop before the current user message (system prompt, skills,
+// wallet nudge, memory/conversation blocks, compaction summary, recent turns). Returns ("", false) to use the reactive loop.
+func (a *Agent) tryGeneralOrchestration(ctx context.Context, msg gateway.IncomingMessage, userText string, contextPrefix []openai.ChatCompletionMessage) (string, bool) {
 	if a.orchestration.Mode == planning.OrchestrationModeOff {
 		return "", false
 	}
@@ -36,24 +38,40 @@ func (a *Agent) tryGeneralOrchestration(ctx context.Context, msg gateway.Incomin
 	sys := `You are a task planner for an assistant with tools. Output ONLY valid JSON, no markdown.
 Shape:
 {"goal":"one line","steps":[{"id":"s1","description":"what to do in this step","allowed_tools":["tool_name",...],"depends_on":[],"risk":"read_only|mutating|wallet"}]}
-Rules:
-- Do as many steps as you need to accomplish a goal. Each step must list ONLY tools needed for that step from the allowed set (subset of real tool names).
-- Order steps so dependencies make sense. depends_on lists step ids that must complete before this step (earlier ids only).
-- For read-only research use: web_search, read_file, read_memory, http_request, list_skills, read_skill, read_skill_script.
-- For mutating filesystem: write_file, run_command (only if needed).
-- For wallet reads (no tx): wallet_get_balance (native coin only), wallet_erc20_balance (ERC-20 balance for configured wallet), wallet_list_transactions.
-- For wallet sends / state-changing on-chain actions: wallet_execute_transfer, wallet_execute_contract_call.
-- risk: use "wallet" for steps that sign and broadcast transactions; "mutating" for writes/commands; "read_only" for searches, http GETs, wallet_erc20_balance, wallet_get_balance, wallet_list_transactions.
+
+CRITICAL — allowed_tools completeness:
+- Each step exposes ONLY the tools listed in that step's "allowed_tools" to the executor. If you omit a tool from "allowed_tools", the executor cannot call it in that step—there is no separate "permission" toggle.
+- Every tool the step description implies MUST appear in "allowed_tools" for that step. Example: if the step checks native gas balance, include "wallet_get_balance". If it checks ERC-20 balance, include "wallet_erc20_balance". If it broadcasts a standard ERC-20 transfer, include "wallet_execute_erc20_transfer". If it sets token allowance for a spender, include "wallet_execute_erc20_approve". If it needs swap or other raw calldata, include "wallet_execute_contract_call". If it sends native coin, include "wallet_execute_transfer".
+- Do not plan a step that needs tool X but only list other tools in "allowed_tools".
+
+Wallet tool choice (avoid wrong tools):
+- Read-only native balance (gas, ETH on a chain): wallet_get_balance — NOT wallet_execute_contract_call.
+- Read-only ERC-20 balance: wallet_erc20_balance — NOT wallet_execute_contract_call (no balanceOf via contract_call for reads).
+- Native token transfer: wallet_execute_transfer.
+- Standard ERC-20 transfer to an address: wallet_execute_erc20_transfer. Standard ERC-20 approve(spender, amount): wallet_execute_erc20_approve. Swap / arbitrary calldata: wallet_execute_contract_call.
+- Past txs: wallet_list_transactions.
+
+General rules:
+- Do as many steps as you need. Order steps so dependencies make sense; depends_on lists step ids that must complete before this step (earlier ids only).
+- Read-only research: web_search, read_file, read_memory, http_request, list_skills, read_skill, read_skill_script.
+- Mutating filesystem: write_file, run_command (only if needed).
+- risk: "wallet" for steps that sign and broadcast; "mutating" for writes/commands; "read_only" for searches, http GETs, wallet_erc20_balance, wallet_get_balance, wallet_list_transactions.
 - Do not include spawn_subagents in plans.
+
 If the task is a single trivial chat with no tools, output: {"goal":"","steps":[]}`
 
-	resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: parentModel,
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: sys},
-			{Role: openai.ChatMessageRoleUser, Content: userText},
-		},
-	})
+	plannerMsgs := make([]openai.ChatCompletionMessage, 0, 2+len(contextPrefix))
+	plannerMsgs = append(plannerMsgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: sys})
+	plannerMsgs = append(plannerMsgs, contextPrefix...)
+	plannerMsgs = append(plannerMsgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userText})
+
+	plannerReq := openai.ChatCompletionRequest{
+		Model:    parentModel,
+		Messages: plannerMsgs,
+	}
+	tPlanner := time.Now()
+	resp, err := a.client.CreateChatCompletion(ctx, plannerReq)
+	a.recordLLMRound(ctx, "orchestration_planner", 0, plannerReq, resp, err, tPlanner)
 	if err != nil {
 		log.Printf("[orchestration] planner LLM error: %v", err)
 		return "", false
@@ -75,14 +93,27 @@ If the task is a single trivial chat with no tools, output: {"goal":"","steps":[
 		return "", false
 	}
 
+	for _, s := range plan.Steps {
+		log.Printf("[orchestration] planner step %s allowed_tools=%v risk=%s", s.ID, s.AllowedTools, s.Risk)
+	}
+
+	planStepsMeta := make([]map[string]interface{}, 0, len(plan.Steps))
+	for _, s := range plan.Steps {
+		planStepsMeta = append(planStepsMeta, map[string]interface{}{
+			"step_id":       s.ID,
+			"allowed_tools": s.AllowedTools,
+			"risk":          string(s.Risk),
+		})
+	}
 	if a.telemetry != nil {
 		a.telemetry.RecordPlanEvent(ctx, "orchestration_plan_start", map[string]interface{}{
 			"goal":       plan.Goal,
 			"step_count": len(plan.Steps),
+			"steps":      planStepsMeta,
 		})
 	}
 
-	final, err := a.runOrchestrationPlan(ctx, msg, userText, plan)
+	final, err := a.runOrchestrationPlan(ctx, msg, userText, plan, contextPrefix)
 	if err != nil {
 		if a.telemetry != nil {
 			a.telemetry.RecordPlanEvent(ctx, "orchestration_error", map[string]interface{}{"error": err.Error()})
@@ -115,16 +146,11 @@ func (a *Agent) shouldSkipOrchestrationTrivial(text string) bool {
 	return false
 }
 
-func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMessage, userText string, plan *planning.OrchestrationPlan) (string, error) {
+func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMessage, userText string, plan *planning.OrchestrationPlan, contextPrefix []openai.ChatCompletionMessage) (string, error) {
 	stepOut := make(map[string]string)
+	llmRoundSeq := 0
 
-	for i, st := range plan.Steps {
-		if a.telemetry != nil {
-			a.telemetry.RecordPlanEvent(ctx, "orchestration_step_start", map[string]interface{}{
-				"step_id": st.ID,
-				"index":   i,
-			})
-		}
+	for stepIdx, st := range plan.Steps {
 		var prior strings.Builder
 		for _, dep := range st.DependsOn {
 			if out, ok := stepOut[dep]; ok && out != "" {
@@ -137,6 +163,16 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 		}
 
 		allowed := filterToolsForRuntime(st.AllowedTools, a.tools)
+		allowed = augmentWalletReadToolsAllowlist(allowed, a.tools)
+		log.Printf("[orchestration] step %s runtime_tools=%v (planner had %v)", st.ID, allowed, st.AllowedTools)
+		if a.telemetry != nil {
+			a.telemetry.RecordPlanEvent(ctx, "orchestration_step_start", map[string]interface{}{
+				"step_id":               st.ID,
+				"index":                 stepIdx,
+				"allowed_tools_planner": st.AllowedTools,
+				"allowed_tools_runtime": allowed,
+			})
+		}
 		if len(allowed) == 0 {
 			stepOut[st.ID] = "Error: no tools available for this step after filtering."
 			continue
@@ -149,13 +185,15 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 
 		walletPipe := false
 		for _, t := range allowed {
-			if t == "wallet_execute_contract_call" {
+			if t == "wallet_execute_contract_call" || t == "wallet_execute_erc20_transfer" || t == "wallet_execute_erc20_approve" {
 				walletPipe = a.tools.Wallet != nil
 				break
 			}
 		}
 
-		sys := "You execute ONE step of a multi-step plan. Use only the provided tools. Call tools as needed.\n"
+		sys := "You execute ONE step of a multi-step plan. You may ONLY call tools from the tool list provided by the API for this request (the planner's allowed_tools for this step, plus wallet_get_balance and wallet_erc20_balance when any wallet tool is present).\n"
+		sys += "Tools available in this step: " + strings.Join(allowed, ", ") + ".\n"
+		sys += "Wallet hints: use wallet_get_balance for native coin balance; wallet_erc20_balance for token balance reads; wallet_execute_transfer for native sends; wallet_execute_erc20_transfer for standard ERC-20 sends; wallet_execute_erc20_approve for ERC-20 allowances (token, spender, amount in base units; 0 revokes); wallet_execute_contract_call only for contract writes that need raw calldata (e.g. swaps)—never use contract_call for read-only balance checks.\n"
 		sys += "Overall user goal: " + plan.Goal + "\n"
 		sys += "This step (" + st.ID + "): " + st.Description + "\n"
 		if prior.Len() > 0 {
@@ -164,19 +202,23 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 		sys += "\nRules: If a tool returns an error, invalid arguments, HTTP 4xx/5xx, or empty/wrong results, you MUST call tools again with corrected parameters (e.g. required fields like web_search \"query\"), a different URL, or another source—do not treat one failed call as the end of the step. When prior tool output already contains useful data (e.g. search hits or HTTP 200 bodies), your summary must reflect that success; do not claim the step failed entirely unless every attempt did."
 		sys += "\nRespond with tool calls until this step is done, then a short text summary of what was learned or done for this step."
 
-		msgs := []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: sys},
-			{Role: openai.ChatMessageRoleUser, Content: "Original request:\n" + userText},
-		}
+		msgs := make([]openai.ChatCompletionMessage, 0, 2+len(contextPrefix))
+		msgs = append(msgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: sys})
+		msgs = append(msgs, contextPrefix...)
+		msgs = append(msgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Original request:\n" + userText})
 
 		var stepBuf strings.Builder
 		var lastToolOut string
 		for round := 0; round < maxOrchestrationStepRounds; round++ {
-			resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+			llmRoundSeq++
+			stepReq := openai.ChatCompletionRequest{
 				Model:    parentModel,
 				Messages: msgs,
 				Tools:    toolDefs,
-			})
+			}
+			tStep := time.Now()
+			resp, err := a.client.CreateChatCompletion(ctx, stepReq)
+			a.recordLLMRound(ctx, fmt.Sprintf("orchestration_step:%s", st.ID), llmRoundSeq, stepReq, resp, err, tStep)
 			if err != nil {
 				stepBuf.WriteString("Error: " + err.Error())
 				break
@@ -281,13 +323,19 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 		return "", fmt.Errorf("no step output to summarize")
 	}
 
-	synResp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: parentModel,
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: orchestrationSynthesisSystemPrompt()},
-			{Role: openai.ChatMessageRoleUser, Content: "User request:\n" + userText + "\n\nStep results:\n" + summary},
-		},
-	})
+	synMsgs := make([]openai.ChatCompletionMessage, 0, 2+len(contextPrefix))
+	synMsgs = append(synMsgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: orchestrationSynthesisSystemPrompt()})
+	synMsgs = append(synMsgs, contextPrefix...)
+	synMsgs = append(synMsgs, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "User request:\n" + userText + "\n\nStep results:\n" + summary})
+
+	llmRoundSeq++
+	synReq := openai.ChatCompletionRequest{
+		Model:    parentModel,
+		Messages: synMsgs,
+	}
+	tSyn := time.Now()
+	synResp, err := a.client.CreateChatCompletion(ctx, synReq)
+	a.recordLLMRound(ctx, "orchestration_synthesis", llmRoundSeq, synReq, synResp, err, tSyn)
 	if err != nil || len(synResp.Choices) == 0 {
 		return summary, nil
 	}
@@ -333,7 +381,10 @@ func orchestrationSynthesisSystemPrompt() string {
 		"- Base your answer ONLY on the step results text. Do not invent facts, failures, or missing parameters that are not stated there.\n" +
 		"- If step results include successful tool output (search hits, HTTP 200 response bodies, file contents), you MUST present that information. Do not claim the whole task failed if some steps clearly returned useful data.\n" +
 		"- You may mention partial failures (e.g. one URL returned 404) alongside what succeeded.\n" +
-		"- If step results are internally contradictory, prefer describing what the text actually shows rather than guessing."
+		"- If step results are internally contradictory, prefer describing what the text actually shows rather than guessing.\n" +
+		"- If a step failed because no tools were available, allowed_tools were wrong, or wallet tools were missing from the plan, explain plainly that the orchestration plan must list every required tool per step (or that the deployment may lack wallet configuration). Do NOT tell the user to enable vague \"platform permissions\" or to \"re-run with permissions\"—that is misleading here.\n" +
+		"- For ERC-20 / token balance, the correct read tool is wallet_erc20_balance (not wallet_execute_contract_call). For sending ERC-20 tokens, wallet_execute_erc20_transfer; for approve/allowance, wallet_execute_erc20_approve. For native gas balance, wallet_get_balance.\n" +
+		"- Keep a helpful tone: suggest retrying the same request (the system may fall back to a different path) or spell out which tools were needed for the task."
 }
 
 func truncateForOrchestration(s string, max int) string {
@@ -357,6 +408,39 @@ func filterToolsForRuntime(allow []string, t *tools.Tools) []string {
 			continue
 		}
 		out = append(out, name)
+	}
+	return out
+}
+
+// augmentWalletReadToolsAllowlist adds wallet_get_balance and wallet_erc20_balance whenever
+// any wallet_* tool is present for the step. Planners often omit these for "transfer" or
+// mixed steps; without them the executor cannot check gas or ERC-20 balance before sending.
+func augmentWalletReadToolsAllowlist(allowed []string, t *tools.Tools) []string {
+	if t == nil || t.Wallet == nil || len(allowed) == 0 {
+		return allowed
+	}
+	hasWalletTool := false
+	for _, name := range allowed {
+		if strings.HasPrefix(name, "wallet_") {
+			hasWalletTool = true
+			break
+		}
+	}
+	if !hasWalletTool {
+		return allowed
+	}
+	extra := []string{"wallet_get_balance", "wallet_erc20_balance"}
+	seen := make(map[string]bool, len(allowed)+len(extra))
+	for _, name := range allowed {
+		seen[name] = true
+	}
+	out := make([]string, 0, len(allowed)+len(extra))
+	out = append(out, allowed...)
+	for _, name := range extra {
+		if !seen[name] {
+			out = append(out, name)
+			seen[name] = true
+		}
 	}
 	return out
 }

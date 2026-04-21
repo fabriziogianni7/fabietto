@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"custom-agent/agent/planning"
 	"custom-agent/compaction"
@@ -226,7 +227,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	if a.tools.Wallet != nil && len(recent) > 0 && wantsWalletSend(text) {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: "CRITICAL: The user is asking to send funds. You MUST call wallet_execute_transfer now. Do NOT respond with text claiming you sent—only a tool call actually executes. Reply with a tool call.",
+			Content: "CRITICAL: The user is asking to send funds. For native coin use wallet_execute_transfer; for ERC-20 tokens (USDC, etc.) use wallet_execute_erc20_transfer. Do NOT respond with text claiming you sent—only a tool call actually executes. Reply with a tool call.",
 		})
 	}
 	for _, block := range contextBlocks {
@@ -258,8 +259,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Content: text,
 	})
 
-	if a.shouldTryGeneralOrchestration(ctx, text) {
-		if reply, ok := a.tryGeneralOrchestration(ctx, msg, text); ok {
+	// Same context as the reactive loop minus the current user line: identity/skills, wallet nudge,
+	// memory & conversation blocks, compaction summary, recent session turns.
+	orchestrationContextPrefix := messages[:len(messages)-1]
+
+	if a.shouldTryGeneralOrchestration(ctx, text, orchestrationContextPrefix) {
+		if reply, ok := a.tryGeneralOrchestration(ctx, msg, text, orchestrationContextPrefix); ok {
 			finalReply = reply
 			return finalReply
 		}
@@ -280,11 +285,14 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	walletPipelineReactive := a.reactiveWalletContractPipeline()
 
 	for i := 0; i < maxToolRounds; i++ {
-		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		req := openai.ChatCompletionRequest{
 			Model:    parentModel,
 			Messages: messages,
 			Tools:    toolDefs,
-		})
+		}
+		t0 := time.Now()
+		resp, err := a.client.CreateChatCompletion(ctx, req)
+		a.recordLLMRound(ctx, "reactive_loop", i, req, resp, err, t0)
 		if err != nil {
 			log.Printf("[agent] LLM error: %v", err)
 			finalReply = "Sorry, I couldn't process that. Please try again."
@@ -302,7 +310,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if len(msgResp.ToolCalls) > 0 {
 			messages = append(messages, msgResp)
 			for _, tc := range msgResp.ToolCalls {
-				if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
+				if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_erc20_transfer" || tc.Function.Name == "wallet_execute_erc20_approve" || tc.Function.Name == "wallet_execute_contract_call" {
 					walletToolUsed = true
 				}
 				args := tc.Function.Arguments
@@ -326,7 +334,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
 			})
-			if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
+			if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_erc20_transfer" || toolName == "wallet_execute_erc20_approve" || toolName == "wallet_execute_contract_call" {
 				walletToolUsed = true
 			}
 			var result string
@@ -349,7 +357,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleSystem,
-				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
+				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer (native), wallet_execute_erc20_transfer (ERC-20 send), wallet_execute_erc20_approve (ERC-20 allowance), or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
 			})
 			continue
 		}

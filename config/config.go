@@ -69,6 +69,8 @@ type Config struct {
 	RunArtifactsEnabled      bool
 	RunArtifactsDir          string
 	RunArtifactRetentionDays int
+	// TelemetryLLMRounds logs full chat completion request/response snapshots to run-artifacts (llm_rounds.json).
+	TelemetryLLMRounds bool
 
 	// Planner (optional). PLANNER_MODE defaults when wallet is enabled (see EffectivePlannerMode).
 	PlannerEnabled      bool   // legacy: if true and PLANNER_MODE unset, use "wallet" mode
@@ -112,10 +114,11 @@ func Load() (*Config, error) {
 		RunArtifactsEnabled:      parseBool(os.Getenv("RUN_ARTIFACTS_ENABLED"), true),
 		RunArtifactsDir:          strings.TrimSpace(os.Getenv("RUN_ARTIFACTS_DIR")),
 		RunArtifactRetentionDays: parseInt(os.Getenv("RUN_ARTIFACT_RETENTION_DAYS"), 7),
-		PlannerEnabled:      parseBool(os.Getenv("PLANNER_ENABLED"), false),
-		PlannerMode:         strings.TrimSpace(os.Getenv("PLANNER_MODE")),
-		PlannerCapabilities: strings.TrimSpace(os.Getenv("PLANNER_CAPABILITIES")),
-		OrchestrationMode:   strings.TrimSpace(os.Getenv("ORCHESTRATION_MODE")),
+		TelemetryLLMRounds:       parseBool(os.Getenv("TELEMETRY_LLM_ROUNDS"), false),
+		PlannerEnabled:           parseBool(os.Getenv("PLANNER_ENABLED"), false),
+		PlannerMode:              strings.TrimSpace(os.Getenv("PLANNER_MODE")),
+		PlannerCapabilities:      strings.TrimSpace(os.Getenv("PLANNER_CAPABILITIES")),
+		OrchestrationMode:        strings.TrimSpace(os.Getenv("ORCHESTRATION_MODE")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"

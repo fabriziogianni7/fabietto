@@ -67,7 +67,52 @@ func EncodeERC20BalanceOf(account common.Address) []byte {
 
 const erc20BalanceOfABI = `[{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}]`
 
+// erc20TransferABI is minimal ERC-20 transfer(address,uint256) for encoding only.
+const erc20TransferABI = `[{"constant":false,"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}]`
+
 const erc20DecimalsABI = `[{"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"}]`
+
+// EncodeERC20Transfer encodes transfer(recipient, amount) for standard ERC-20 tokens.
+func EncodeERC20Transfer(recipient common.Address, amount *big.Int) ([]byte, error) {
+	if amount == nil {
+		return nil, fmt.Errorf("amount is nil")
+	}
+	if amount.Sign() <= 0 {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+	parsed, err := abi.JSON(strings.NewReader(erc20TransferABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse erc20 transfer abi: %w", err)
+	}
+	data, err := parsed.Pack("transfer", recipient, amount)
+	if err != nil {
+		return nil, fmt.Errorf("pack transfer: %w", err)
+	}
+	return data, nil
+}
+
+// erc20ApproveABI is minimal ERC-20 approve(address,uint256) for encoding only.
+const erc20ApproveABI = `[{"constant":false,"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"}]`
+
+// EncodeERC20Approve encodes approve(spender, amount) for standard ERC-20 tokens.
+// amount may be zero to revoke allowance.
+func EncodeERC20Approve(spender common.Address, amount *big.Int) ([]byte, error) {
+	if amount == nil {
+		return nil, fmt.Errorf("amount is nil")
+	}
+	if amount.Sign() < 0 {
+		return nil, fmt.Errorf("amount must be non-negative")
+	}
+	parsed, err := abi.JSON(strings.NewReader(erc20ApproveABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse erc20 approve abi: %w", err)
+	}
+	data, err := parsed.Pack("approve", spender, amount)
+	if err != nil {
+		return nil, fmt.Errorf("pack approve: %w", err)
+	}
+	return data, nil
+}
 
 // EncodeERC20Decimals encodes decimals() calldata.
 func EncodeERC20Decimals() ([]byte, error) {

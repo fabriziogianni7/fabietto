@@ -2,14 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"strconv"
 	"strings"
 
 	"custom-agent/agent/planning"
 	"custom-agent/gateway"
 	"custom-agent/tools"
+	"custom-agent/wallet/abi"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -24,7 +28,8 @@ func (a *Agent) reactiveWalletContractPipeline() bool {
 }
 
 // executeToolForMessage runs a single tool with the same injection behavior as HandleMessage.
-// If walletPipeline is true and the tool is wallet_execute_contract_call, runs the wallet
+// If walletPipeline is true and the tool is wallet_execute_contract_call or
+// wallet_execute_erc20_transfer or wallet_execute_erc20_approve, runs the wallet
 // preview/simulate/send pipeline via planning.WalletExecutor instead of a raw tool call.
 func (a *Agent) executeToolForMessage(ctx context.Context, msg gateway.IncomingMessage, name, argsJSON string, walletPipeline bool) string {
 	if a == nil || a.tools == nil {
@@ -39,6 +44,16 @@ func (a *Agent) executeToolForMessage(ctx context.Context, msg gateway.IncomingM
 			return out
 		}
 	}
+	if walletPipeline && name == "wallet_execute_erc20_transfer" && a.tools.Wallet != nil {
+		if out, ok := a.tryWalletERC20TransferPipeline(ctx, msg, argsJSON); ok {
+			return out
+		}
+	}
+	if walletPipeline && name == "wallet_execute_erc20_approve" && a.tools.Wallet != nil {
+		if out, ok := a.tryWalletERC20ApprovePipeline(ctx, msg, argsJSON); ok {
+			return out
+		}
+	}
 	args := argsJSON
 	if name == "save_memory" || name == "read_memory" {
 		if injected, err := tools.InjectMemoryArgs(args, msg.Platform, msg.UserID); err == nil {
@@ -50,7 +65,7 @@ func (a *Agent) executeToolForMessage(ctx context.Context, msg gateway.IncomingM
 			args = injected
 		}
 	}
-	if name == "wallet_execute_transfer" || name == "wallet_execute_contract_call" {
+	if name == "wallet_execute_transfer" || name == "wallet_execute_erc20_transfer" || name == "wallet_execute_erc20_approve" || name == "wallet_execute_contract_call" {
 		if injected, err := tools.InjectWalletArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
 			args = injected
 		}
@@ -107,6 +122,160 @@ func (a *Agent) tryWalletContractPipeline(ctx context.Context, msg gateway.Incom
 		return "", false
 	}
 	p := planning.WalletTxTemplate("contract call", constraints)
+	if err := planning.ValidatePlan(p); err != nil {
+		return "", false
+	}
+	v := planning.NewValidator(planning.CapabilityWalletTx)
+	if err := v.Validate(p); err != nil {
+		return "", false
+	}
+	exec := &planning.WalletExecutor{Wallet: a.tools.Wallet}
+	res, err := exec.Execute(ctx, p)
+	if err != nil {
+		return "Planner execution failed: " + err.Error(), true
+	}
+	out := strings.TrimSpace(res.FinalReply)
+	if out == "" {
+		out = "Plan completed."
+	}
+	return out, true
+}
+
+type walletERC20Args struct {
+	Token   string      `json:"token"`
+	To      string      `json:"to"`
+	Amount  string      `json:"amount"`
+	ChainID interface{} `json:"chain_id"`
+}
+
+// tryWalletERC20TransferPipeline builds ERC-20 transfer calldata in-process and runs the same
+// WalletExecutor path as contract_call (preview → simulate → send).
+func (a *Agent) tryWalletERC20TransferPipeline(ctx context.Context, msg gateway.IncomingMessage, argsJSON string) (string, bool) {
+	var wa walletERC20Args
+	if err := json.Unmarshal([]byte(argsJSON), &wa); err != nil {
+		return "", false
+	}
+	token := strings.TrimSpace(wa.Token)
+	toAddr := strings.TrimSpace(wa.To)
+	amountStr := strings.TrimSpace(wa.Amount)
+	if token == "" || toAddr == "" || amountStr == "" {
+		return "", false
+	}
+	if !common.IsHexAddress(token) || !common.IsHexAddress(toAddr) {
+		return "", false
+	}
+	amt := new(big.Int)
+	if _, ok := amt.SetString(amountStr, 10); !ok || amt.Sign() <= 0 {
+		return "", false
+	}
+	recipient := common.HexToAddress(toAddr)
+	data, err := abi.EncodeERC20Transfer(recipient, amt)
+	if err != nil {
+		return "", false
+	}
+	dataHex := "0x" + hex.EncodeToString(data)
+	chainID := ""
+	switch v := wa.ChainID.(type) {
+	case float64:
+		if v > 0 {
+			chainID = strconv.FormatInt(int64(v), 10)
+		}
+	case string:
+		chainID = strings.TrimSpace(v)
+	}
+
+	constraints := map[string]string{
+		"to":        token,
+		"data":      dataHex,
+		"value_wei": "0",
+		"_platform": msg.Platform,
+		"_user_id":  msg.UserID,
+		"_chat_id":  msg.ChatID,
+	}
+	if chainID != "" {
+		constraints["chain_id"] = chainID
+	}
+	if err := planning.ValidateWalletConstraints(constraints); err != nil {
+		return "", false
+	}
+	p := planning.WalletTxTemplate("ERC-20 transfer", constraints)
+	if err := planning.ValidatePlan(p); err != nil {
+		return "", false
+	}
+	v := planning.NewValidator(planning.CapabilityWalletTx)
+	if err := v.Validate(p); err != nil {
+		return "", false
+	}
+	exec := &planning.WalletExecutor{Wallet: a.tools.Wallet}
+	res, err := exec.Execute(ctx, p)
+	if err != nil {
+		return "Planner execution failed: " + err.Error(), true
+	}
+	out := strings.TrimSpace(res.FinalReply)
+	if out == "" {
+		out = "Plan completed."
+	}
+	return out, true
+}
+
+type walletERC20ApproveArgs struct {
+	Token   string      `json:"token"`
+	Spender string      `json:"spender"`
+	Amount  string      `json:"amount"`
+	ChainID interface{} `json:"chain_id"`
+}
+
+// tryWalletERC20ApprovePipeline builds ERC-20 approve calldata in-process and runs the same
+// WalletExecutor path as contract_call (preview → simulate → send).
+func (a *Agent) tryWalletERC20ApprovePipeline(ctx context.Context, msg gateway.IncomingMessage, argsJSON string) (string, bool) {
+	var wa walletERC20ApproveArgs
+	if err := json.Unmarshal([]byte(argsJSON), &wa); err != nil {
+		return "", false
+	}
+	token := strings.TrimSpace(wa.Token)
+	spenderAddr := strings.TrimSpace(wa.Spender)
+	amountStr := strings.TrimSpace(wa.Amount)
+	if token == "" || spenderAddr == "" || amountStr == "" {
+		return "", false
+	}
+	if !common.IsHexAddress(token) || !common.IsHexAddress(spenderAddr) {
+		return "", false
+	}
+	amt := new(big.Int)
+	if _, ok := amt.SetString(amountStr, 10); !ok || amt.Sign() < 0 {
+		return "", false
+	}
+	spender := common.HexToAddress(spenderAddr)
+	data, err := abi.EncodeERC20Approve(spender, amt)
+	if err != nil {
+		return "", false
+	}
+	dataHex := "0x" + hex.EncodeToString(data)
+	chainID := ""
+	switch v := wa.ChainID.(type) {
+	case float64:
+		if v > 0 {
+			chainID = strconv.FormatInt(int64(v), 10)
+		}
+	case string:
+		chainID = strings.TrimSpace(v)
+	}
+
+	constraints := map[string]string{
+		"to":        token,
+		"data":      dataHex,
+		"value_wei": "0",
+		"_platform": msg.Platform,
+		"_user_id":  msg.UserID,
+		"_chat_id":  msg.ChatID,
+	}
+	if chainID != "" {
+		constraints["chain_id"] = chainID
+	}
+	if err := planning.ValidateWalletConstraints(constraints); err != nil {
+		return "", false
+	}
+	p := planning.WalletTxTemplate("ERC-20 approve", constraints)
 	if err := planning.ValidatePlan(p); err != nil {
 		return "", false
 	}

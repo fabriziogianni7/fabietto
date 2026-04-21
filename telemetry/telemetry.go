@@ -18,6 +18,8 @@ type Config struct {
 	ArtifactsDir          string
 	ArtifactRetentionDays int
 	MetricsEnabled        bool
+	// LLMRoundsEnabled records per-request chat payloads into run-artifacts (llm_rounds.json) and emits llm_round events.
+	LLMRoundsEnabled bool
 }
 
 type Event struct {
@@ -51,6 +53,7 @@ type TurnRecorder struct {
 	EndedAt    time.Time
 	transcript []TranscriptEntry
 	tools      []ToolCallSummary
+	llmRounds  []LLMRoundRecord
 	mu         sync.Mutex
 }
 

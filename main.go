@@ -93,6 +93,7 @@ func main() {
 		ArtifactsDir:          cfg.RunArtifactsDir,
 		ArtifactRetentionDays: cfg.RunArtifactRetentionDays,
 		MetricsEnabled:        cfg.TelemetryMetricsEnabled,
+		LLMRoundsEnabled:      cfg.TelemetryLLMRounds,
 	}
 	telemetryRuntime := telemetry.NewRuntime(telemetryCfg)
 	toolSet.Telemetry = telemetryRuntime

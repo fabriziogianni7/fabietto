@@ -23,6 +23,16 @@ func TestArtifactStoreWriteRunArtifacts(t *testing.T) {
 	}
 	tr.AddTranscript(TranscriptEntry{Role: "user", Content: "hi", Kind: "input"})
 	tr.AddToolSummary(ToolCallSummary{ToolName: "read_file", DurationMs: 12, Success: true})
+	tr.AddLLMRound(LLMRoundRecord{
+		Phase: "test",
+		Round: 0,
+		Model: "m",
+		Request: LLMRoundRequest{
+			MessageCount: 1,
+			Messages:     []LLMMessageSnap{{Role: "user", Content: "hi"}},
+		},
+		DurationMs: 5,
+	})
 
 	if err := store.WriteRunArtifacts(tr, MetricSnapshot{
 		Counters: map[string]int64{"x": 1},
@@ -32,7 +42,7 @@ func TestArtifactStoreWriteRunArtifacts(t *testing.T) {
 	}
 
 	runDir := filepath.Join(tmp, "run-1")
-	for _, name := range []string{"metadata.json", "transcript.json", "tool_summary.json", "metrics.json"} {
+	for _, name := range []string{"metadata.json", "transcript.json", "tool_summary.json", "metrics.json", "llm_rounds.json"} {
 		if _, err := os.Stat(filepath.Join(runDir, name)); err != nil {
 			t.Fatalf("expected file %s: %v", name, err)
 		}
