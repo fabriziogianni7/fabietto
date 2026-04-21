@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -22,6 +23,12 @@ type TelegramGateway struct {
 // NewTelegram creates a Telegram gateway. Token must be non-empty.
 func NewTelegram(token string) *TelegramGateway {
 	return &TelegramGateway{token: token}
+}
+
+func telegramSendTyping(bot *tgbotapi.BotAPI, chatID int64) {
+	if _, err := bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
+		log.Printf("[telegram] typing action error: %v", err)
+	}
 }
 
 // Send delivers an outbound message to the chat. Implements Sender.
@@ -80,7 +87,23 @@ func (g *TelegramGateway) Run(ctx context.Context, handler Handler) error {
 				ReplyToID: fmt.Sprintf("%d", msg.MessageID),
 			}
 
+			telegramSendTyping(bot, msg.Chat.ID)
+			typingDone := make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(4 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-typingDone:
+						return
+					case <-ticker.C:
+						telegramSendTyping(bot, msg.Chat.ID)
+					}
+				}
+			}()
+
 			reply := handler(incoming)
+			close(typingDone)
 
 			response := tgbotapi.NewMessage(msg.Chat.ID, FormatForTelegramReply(reply))
 			response.ParseMode = tgbotapi.ModeHTML
