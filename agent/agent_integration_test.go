@@ -24,6 +24,9 @@ func (m *mockWalletService) DefaultChainID() int64 { return 1 }
 func (m *mockWalletService) GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error) {
 	return "0", nil
 }
+func (m *mockWalletService) ERC20Balance(ctx context.Context, chainID int64, token string) (string, error) {
+	return "mock erc20", nil
+}
 func (m *mockWalletService) ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error) {
 	return "tx-sent", nil
 }
@@ -38,6 +41,15 @@ func (m *mockWalletService) ExecuteApproved(ctx context.Context, approvalID, pla
 }
 func (m *mockWalletService) ListTransactions(chainID int64, limit int) (string, error) {
 	return "", nil
+}
+func (m *mockWalletService) WalletPreviewContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) (method string, decision string, gasLimit uint64, err error) {
+	return "swap", "allow", 210000, nil
+}
+func (m *mockWalletService) WalletSimulateContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) error {
+	return nil
+}
+func (m *mockWalletService) WalletReceiptSummary(ctx context.Context, chainID int64, txHash string) (string, error) {
+	return "success block=1 gas_used=21000", nil
 }
 
 func TestHandleMessage_MultiRoundToolUseReturnsFinalResponse(t *testing.T) {

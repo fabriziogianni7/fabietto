@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"custom-agent/agent"
+	"custom-agent/agent/planning"
 	"custom-agent/config"
 	"custom-agent/conversation"
 	"custom-agent/embedding"
@@ -92,6 +93,7 @@ func main() {
 		ArtifactsDir:          cfg.RunArtifactsDir,
 		ArtifactRetentionDays: cfg.RunArtifactRetentionDays,
 		MetricsEnabled:        cfg.TelemetryMetricsEnabled,
+		LLMRoundsEnabled:      cfg.TelemetryLLMRounds,
 	}
 	telemetryRuntime := telemetry.NewRuntime(telemetryCfg)
 	toolSet.Telemetry = telemetryRuntime
@@ -179,6 +181,30 @@ func main() {
 	systemPrompt = strings.TrimSpace(systemPrompt)
 
 	a := agent.New(llm, systemPrompt, cfg.CompactionThreshold, toolSet, convStore, cfg.SkillsDir, telemetryRuntime)
+	plannerMode := cfg.EffectivePlannerMode()
+	plannerCaps := planning.ParseCapabilities(cfg.PlannerCapabilities)
+	if plannerMode != planning.PlannerModeOff && len(plannerCaps) == 0 {
+		plannerCaps = planning.ParseCapabilities("wallet")
+	}
+	plannerOn := plannerMode != planning.PlannerModeOff
+	if plannerOn && toolSet.Wallet == nil {
+		log.Printf("[planner] mode=%s ignored (wallet not configured)", plannerMode)
+		plannerOn = false
+		plannerMode = planning.PlannerModeOff
+	}
+	orchMode := cfg.EffectiveOrchestrationMode()
+	a.SetPlanner(planning.RuntimeConfig{
+		Enabled:       plannerOn,
+		Mode:          plannerMode,
+		Capabilities:  plannerCaps,
+		Orchestration: planning.OrchestrationRuntime{Mode: orchMode},
+	})
+	if plannerOn {
+		log.Printf("[planner] mode=%s capabilities=%v", plannerMode, plannerCaps)
+	}
+	if orchMode != planning.OrchestrationModeOff {
+		log.Printf("[orchestration] mode=%s", orchMode)
+	}
 
 	queue := sessionqueue.New(func(msg gateway.IncomingMessage) string {
 		return a.HandleMessage(context.Background(), msg)

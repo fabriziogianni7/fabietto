@@ -18,6 +18,8 @@ type Config struct {
 	ArtifactsDir          string
 	ArtifactRetentionDays int
 	MetricsEnabled        bool
+	// LLMRoundsEnabled records per-request chat payloads into run-artifacts (llm_rounds.json) and emits llm_round events.
+	LLMRoundsEnabled bool
 }
 
 type Event struct {
@@ -51,6 +53,7 @@ type TurnRecorder struct {
 	EndedAt    time.Time
 	transcript []TranscriptEntry
 	tools      []ToolCallSummary
+	llmRounds  []LLMRoundRecord
 	mu         sync.Mutex
 }
 
@@ -201,17 +204,46 @@ func (r *Runtime) RecordFallbackParser(ctx context.Context, used bool) {
 	}
 }
 
+// RecordPlanEvent emits a plan lifecycle event (planner validation, step execution, etc.).
+// eventType is a short suffix; orchestration uses prefixes like "orchestration_plan_start".
+func (r *Runtime) RecordPlanEvent(ctx context.Context, eventType string, data map[string]interface{}) {
+	if !r.Enabled() {
+		return
+	}
+	tr := r.turnFromContext(ctx)
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	prefix := "plan_"
+	if strings.HasPrefix(eventType, "orchestration_") {
+		prefix = ""
+	}
+	r.emit(Event{
+		SchemaVersion: schemaVersion,
+		EventType:     prefix + eventType,
+		Timestamp:     time.Now().UTC(),
+		RunID:         turnID(tr),
+		SessionID:     turnSession(tr),
+		Data:          data,
+	})
+}
+
 func (r *Runtime) OnToolCallStart(ctx context.Context, name, argsJSON string) {
 	if !r.Enabled() {
 		return
 	}
 	tr := r.turnFromContext(ctx)
+	argsTrunc := r.truncateToolArgsJSON(argsJSON)
 	if tr != nil {
-		tr.AddTranscript(TranscriptEntry{Role: "assistant", Content: name, Kind: "tool_call_start"})
+		tr.AddTranscript(TranscriptEntry{
+			Role:     "assistant",
+			Content:  name,
+			Kind:     "tool_call_start",
+			ArgsJSON: argsTrunc,
+		})
 	}
-	data := map[string]interface{}{}
-	if r.cfg.Verbosity == "debug" {
-		data["args_json"] = truncate(argsJSON, 400)
+	data := map[string]interface{}{
+		"args_json": argsTrunc,
 	}
 	r.emit(Event{
 		SchemaVersion: schemaVersion,
@@ -224,14 +256,16 @@ func (r *Runtime) OnToolCallStart(ctx context.Context, name, argsJSON string) {
 	})
 }
 
-func (r *Runtime) OnToolCallEnd(ctx context.Context, name string, duration time.Duration, err error, errorCategory, result string) {
+func (r *Runtime) OnToolCallEnd(ctx context.Context, name string, duration time.Duration, err error, errorCategory, result, argsJSON string) {
 	if !r.Enabled() {
 		return
 	}
 	tr := r.turnFromContext(ctx)
+	argsTrunc := r.truncateToolArgsJSON(argsJSON)
 	if tr != nil {
 		tr.AddToolSummary(ToolCallSummary{
 			ToolName:      name,
+			ArgsJSON:      argsTrunc,
 			DurationMs:    duration.Milliseconds(),
 			Success:       err == nil && errorCategory == "",
 			ErrorCategory: errorCategory,
@@ -254,7 +288,24 @@ func (r *Runtime) OnToolCallEnd(ctx context.Context, name string, duration time.
 		ToolName:      name,
 		ErrorCategory: errorCategory,
 		DurationMs:    duration.Milliseconds(),
+		Data: map[string]interface{}{
+			"args_json": argsTrunc,
+		},
 	})
+}
+
+// truncateToolArgsJSON limits JSON argument size in telemetry (logs and run-artifacts).
+// Debug verbosity allows longer payloads (e.g. large contract calldata).
+func (r *Runtime) truncateToolArgsJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	limit := 4096
+	if r.cfg.Verbosity == "debug" {
+		limit = 12000
+	}
+	return truncate(s, limit)
 }
 
 func (r *Runtime) emit(evt Event) {

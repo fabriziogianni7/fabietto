@@ -1,0 +1,34 @@
+{
+  "schema_version": "v1",
+  "id": "tool.execute.wallet_erc20_balance.base_usdc",
+  "category": "tool-calling-correctness",
+  "description": "wallet_erc20_balance can be invoked for official USDC on Base (8453) when wallet stub returns a balance line",
+  "operation": {
+    "type": "tool_execute",
+    "tool_name": "wallet_erc20_balance",
+    "tool_args": {
+      "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "chain_id": 8453
+    },
+    "tool_wallet": {
+      "erc20_balance_output": "Token 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 balance for 0x1111111111111111111111111111111111111111 (chain 8453): raw=1500000 decimals=6 formatted=1.5"
+    }
+  },
+  "assertions": [
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "formatted=1.5"
+    },
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "8453"
+    },
+    {
+      "type": "contains",
+      "key": "output",
+      "value": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+    }
+  ]
+}

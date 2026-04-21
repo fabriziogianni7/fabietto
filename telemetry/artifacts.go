@@ -11,13 +11,15 @@ import (
 )
 
 type TranscriptEntry struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Kind    string `json:"kind,omitempty"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	Kind     string `json:"kind,omitempty"`
+	ArgsJSON string `json:"args_json,omitempty"`
 }
 
 type ToolCallSummary struct {
 	ToolName      string `json:"tool_name"`
+	ArgsJSON      string `json:"args_json,omitempty"`
 	DurationMs    int64  `json:"duration_ms"`
 	Success       bool   `json:"success"`
 	ErrorCategory string `json:"error_category,omitempty"`
@@ -91,6 +93,11 @@ func (s *ArtifactStore) WriteRunArtifacts(tr *TurnRecorder, metrics MetricSnapsh
 	}
 	if err := writeJSON(filepath.Join(runDir, "metrics.json"), metrics); err != nil {
 		return err
+	}
+	if rounds := tr.LLMRounds(); len(rounds) > 0 {
+		if err := writeJSON(filepath.Join(runDir, "llm_rounds.json"), rounds); err != nil {
+			return err
+		}
 	}
 	return s.prune()
 }

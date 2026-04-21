@@ -26,3 +26,5 @@ wallet-approvals/
 wallet-history/
 .cursor/*
 .DS_Store
+
+run-artifacts/*

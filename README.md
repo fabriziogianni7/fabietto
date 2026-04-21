@@ -284,6 +284,39 @@ See `agent-handbook/capabilities/wallet.md` for tool usage (that file is include
 
 **x402 buyer:** When the wallet is enabled (env backend), the `http_request` tool can automatically pay for APIs that return 402 Payment Required. The agent uses the same wallet to sign x402 payment payloads.
 
+### Planner (plan-and-execute)
+
+Pipeline for **on-chain contract interactions** (not plain native ETH sends). When active, the agent runs: structured `to` / `data` / `value_wei` from an LLM → validate → policy preview → **eth_call** simulation → broadcast → optional receipt check.
+
+| Env var | Description |
+|---------|-------------|
+| `PLANNER_MODE` | `off` \| `wallet` \| `auto` \| `always_wallet`. **If unset:** with wallet configured defaults to **`auto`**; otherwise `off`. Legacy `PLANNER_ENABLED=true` maps to `wallet`; `false` maps to `off`. |
+| `PLANNER_CAPABILITIES` | Comma-separated; use `wallet`. If omitted while planner is on, defaults to `wallet`. |
+
+- **`auto`**: broad heuristics (DeFi keywords, `0x` addresses, etc.) trigger the planner; short or ambiguous messages may use a small router LLM turn.
+- **`always_wallet`**: try the wallet planner on every message (except the simple native-send path).
+- **`wallet`**: original narrow keywords only (swap / contract-call phrasing).
+
+Telemetry emits `plan_*` events when telemetry is on. Native ETH sends (`wallet_execute_transfer` path) still use the reactive tool loop.
+
+### Orchestration (multi-tool planner)
+
+Optional **general** plan-and-execute layer that runs **before** the normal tool loop when enabled. It asks the model for a JSON plan (`goal` + ordered `steps` with per-step `allowed_tools`), validates tool names and dependencies, then runs **one micro-agent per step** (capped tool rounds) with only that step’s tools. Step outputs feed later steps. A final synthesis summarizes for the user. If planning or execution fails, the agent falls back to the usual reactive loop.
+
+`wallet_execute_contract_call` inside orchestration uses the same preview → simulate → send pipeline as the wallet planner when possible.
+
+| Env var | Description |
+|---------|-------------|
+| `ORCHESTRATION_MODE` | `off` (default) \| `auto` \| `always`. **`auto`**: multi-step cues (e.g. “then”, “first…then”), long messages, or a small router LLM. **`always`**: try orchestration on every non-trivial message. |
+
+| Mode | Behavior |
+|------|----------|
+| `off` | Only the wallet planner (if any) + reactive loop. |
+| `auto` | Orchestration when heuristics or router suggest multi-step work. |
+| `always` | Orchestration first; fallback to reactive on failure. |
+
+Wallet-only `tryWalletPlanner` is **skipped** when orchestration is not `off`, to avoid double-planning.
+
 ---
 
 ## Skills

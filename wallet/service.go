@@ -10,8 +10,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	walletabi "custom-agent/wallet/abi"
 	"custom-agent/wallet/account"
 	"custom-agent/wallet/approval"
+	"custom-agent/wallet/calldata"
 	"custom-agent/wallet/chains"
 	"custom-agent/wallet/history"
 	"custom-agent/wallet/policy"
@@ -124,6 +126,64 @@ func (s *Service) GetBalanceString(ctx context.Context, chainID int64, block int
 	return bal.String(), nil
 }
 
+// ERC20Balance returns formatted ERC-20 balance for the configured wallet via eth_call (balanceOf + decimals).
+// chainID 0 = default chain. tokenAddr is the ERC-20 contract (0x...).
+func (s *Service) ERC20Balance(ctx context.Context, chainID int64, tokenAddr string) (string, error) {
+	cid, err := s.resolveChainID(chainID)
+	if err != nil {
+		return "", err
+	}
+	if !common.IsHexAddress(tokenAddr) {
+		return "", fmt.Errorf("invalid token address")
+	}
+	token := common.HexToAddress(tokenAddr)
+	_, prov, err := s.getAccount(cid)
+	if err != nil {
+		return "", err
+	}
+	owner := s.signer.Address()
+	from := owner
+	data := walletabi.EncodeERC20BalanceOf(owner)
+	ret, err := prov.CallContract(ctx, &from, &token, big.NewInt(0), data)
+	if err != nil {
+		return "", fmt.Errorf("balanceOf: %w", err)
+	}
+	raw, err := walletabi.DecodeERC20BalanceReturn(ret)
+	if err != nil {
+		return "", fmt.Errorf("decode balance: %w", err)
+	}
+
+	decimals := uint8(18)
+	decData, err := walletabi.EncodeERC20Decimals()
+	if err == nil {
+		dret, derr := prov.CallContract(ctx, &from, &token, big.NewInt(0), decData)
+		if derr == nil && len(dret) > 0 {
+			if d, derr := walletabi.DecodeERC20DecimalsReturn(dret); derr == nil {
+				decimals = d
+			}
+		}
+	}
+
+	formatted := formatERC20Amount(raw, decimals)
+	return fmt.Sprintf("Token %s balance for %s (chain %d): raw=%s decimals=%d formatted=%s",
+		token.Hex(), owner.Hex(), cid, raw.String(), decimals, formatted), nil
+}
+
+func formatERC20Amount(raw *big.Int, decimals uint8) string {
+	if decimals == 0 {
+		return raw.String()
+	}
+	denom := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	rat := new(big.Rat).SetFrac(raw, denom)
+	s := rat.FloatString(int(decimals))
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-" {
+		return "0"
+	}
+	return s
+}
+
 // ExecuteTransfer sends native token to an address. valueWei is wei as string.
 // chainID 0 = default chain.
 func (s *Service) ExecuteTransfer(ctx context.Context, chainID int64, toAddr string, valueWei string, platform, userID, chatID string) (string, error) {
@@ -163,14 +223,120 @@ func (s *Service) ExecuteContractCall(ctx context.Context, chainID int64, toAddr
 	if err != nil {
 		gas = 300000 // fallback
 	}
+	method := ""
+	calldata.AnnotateAction(&method, data)
 	action := &account.Action{
 		Type:     "contract_call",
 		To:       to,
 		Value:    val,
 		Data:     data,
 		GasLimit: gas + gas/10, // add 10% buffer
+		Method:   method,
 	}
 	return s.ExecuteAction(ctx, chainID, action, platform, userID, chatID)
+}
+
+// buildContractCallAction constructs a contract_call action with gas estimate and Method annotation.
+func (s *Service) buildContractCallAction(ctx context.Context, chainID int64, to common.Address, data []byte, val *big.Int) (*account.Action, error) {
+	cid, err := s.resolveChainID(chainID)
+	if err != nil {
+		return nil, err
+	}
+	acc, _, err := s.getAccount(cid)
+	if err != nil {
+		return nil, err
+	}
+	gas, err := acc.Estimate(ctx, &account.Action{To: to, Value: val, Data: data, GasLimit: 0})
+	if err != nil {
+		gas = 300000
+	}
+	method := ""
+	calldata.AnnotateAction(&method, data)
+	return &account.Action{
+		Type:     "contract_call",
+		To:       to,
+		Value:    val,
+		Data:     data,
+		GasLimit: gas + gas/10,
+		Method:   method,
+	}, nil
+}
+
+// PreviewContractAction evaluates policy for a contract call without broadcasting.
+func (s *Service) PreviewContractAction(ctx context.Context, chainID int64, toAddr, dataHex, valueWei string) (*account.Action, policy.Decision, error) {
+	to := common.HexToAddress(toAddr)
+	val := new(big.Int)
+	if valueWei != "" {
+		val.SetString(valueWei, 10)
+	}
+	data := common.FromHex(dataHex)
+	action, err := s.buildContractCallAction(ctx, chainID, to, data, val)
+	if err != nil {
+		return nil, policy.Deny, err
+	}
+	return action, s.policy.Evaluate(action), nil
+}
+
+// WalletPreviewContract implements tools.WalletService extension for planners.
+func (s *Service) WalletPreviewContract(ctx context.Context, chainID int64, toAddr, dataHex, valueWei string) (method string, decision string, gasLimit uint64, err error) {
+	act, dec, err := s.PreviewContractAction(ctx, chainID, toAddr, dataHex, valueWei)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return act.Method, dec.String(), act.GasLimit, nil
+}
+
+// WalletSimulateContract implements tools.WalletService extension (eth_call preflight).
+func (s *Service) WalletSimulateContract(ctx context.Context, chainID int64, toAddr, dataHex, valueWei string) error {
+	return s.SimulateContractCall(ctx, chainID, toAddr, dataHex, valueWei)
+}
+
+// WalletReceiptSummary implements tools.WalletService extension.
+func (s *Service) WalletReceiptSummary(ctx context.Context, chainID int64, txHash string) (string, error) {
+	return s.ReceiptSummary(ctx, chainID, txHash)
+}
+
+// SimulateContractCall runs eth_call for the same calldata the tx would use (preflight).
+func (s *Service) SimulateContractCall(ctx context.Context, chainID int64, toAddr, dataHex, valueWei string) error {
+	cid, err := s.resolveChainID(chainID)
+	if err != nil {
+		return err
+	}
+	_, prov, err := s.getAccount(cid)
+	if err != nil {
+		return err
+	}
+	to := common.HexToAddress(toAddr)
+	val := new(big.Int)
+	if valueWei != "" {
+		val.SetString(valueWei, 10)
+	}
+	data := common.FromHex(dataHex)
+	from := s.signer.Address()
+	_, err = prov.CallContract(ctx, &from, &to, val, data)
+	return err
+}
+
+// ReceiptSummary fetches a transaction receipt for verification after broadcast.
+func (s *Service) ReceiptSummary(ctx context.Context, chainID int64, txHashHex string) (string, error) {
+	cid, err := s.resolveChainID(chainID)
+	if err != nil {
+		return "", err
+	}
+	_, prov, err := s.getAccount(cid)
+	if err != nil {
+		return "", err
+	}
+	h := common.HexToHash(txHashHex)
+	r, err := prov.TransactionReceipt(ctx, h)
+	if err != nil {
+		return "", err
+	}
+	st := "success"
+	if r.Status != 1 {
+		st = "reverted"
+	}
+	return fmt.Sprintf("%s block=%d gas_used=%d", st, r.BlockNumber.Uint64(), r.GasUsed), nil
 }
 
 // EstimateAction returns estimated gas for the action on the given chain.

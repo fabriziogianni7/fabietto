@@ -69,6 +69,16 @@ type Config struct {
 	RunArtifactsEnabled      bool
 	RunArtifactsDir          string
 	RunArtifactRetentionDays int
+	// TelemetryLLMRounds logs full chat completion request/response snapshots to run-artifacts (llm_rounds.json).
+	TelemetryLLMRounds bool
+
+	// Planner (optional). PLANNER_MODE defaults when wallet is enabled (see EffectivePlannerMode).
+	PlannerEnabled      bool   // legacy: if true and PLANNER_MODE unset, use "wallet" mode
+	PlannerMode         string // off | wallet | auto | always_wallet
+	PlannerCapabilities string // comma-separated e.g. "wallet"
+
+	// Orchestration (optional). Multi-tool plan-and-execute before reactive loop (see EffectiveOrchestrationMode).
+	OrchestrationMode string // off | auto | always
 }
 
 // Load reads environment variables from .env (if present) and validates required values.
@@ -104,6 +114,11 @@ func Load() (*Config, error) {
 		RunArtifactsEnabled:      parseBool(os.Getenv("RUN_ARTIFACTS_ENABLED"), true),
 		RunArtifactsDir:          strings.TrimSpace(os.Getenv("RUN_ARTIFACTS_DIR")),
 		RunArtifactRetentionDays: parseInt(os.Getenv("RUN_ARTIFACT_RETENTION_DAYS"), 7),
+		TelemetryLLMRounds:       parseBool(os.Getenv("TELEMETRY_LLM_ROUNDS"), false),
+		PlannerEnabled:           parseBool(os.Getenv("PLANNER_ENABLED"), false),
+		PlannerMode:              strings.TrimSpace(os.Getenv("PLANNER_MODE")),
+		PlannerCapabilities:      strings.TrimSpace(os.Getenv("PLANNER_CAPABILITIES")),
+		OrchestrationMode:        strings.TrimSpace(os.Getenv("ORCHESTRATION_MODE")),
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = "./skills-data"
@@ -193,5 +208,45 @@ func parseBool(s string, defaultVal bool) bool {
 		return false
 	default:
 		return defaultVal
+	}
+}
+
+// EffectivePlannerMode resolves PLANNER_MODE and legacy PLANNER_ENABLED.
+// - If PLANNER_MODE is set, it wins (off|wallet|auto|always_wallet).
+// - Else if PLANNER_ENABLED is set in the environment, true -> wallet, false -> off.
+// - Else if wallet is configured, default is auto (try planner for uncertain on-chain intents).
+// - Else off.
+func (c *Config) EffectivePlannerMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.PlannerMode))
+	if mode != "" {
+		switch mode {
+		case "off", "wallet", "auto", "always_wallet":
+			return mode
+		default:
+			return "off"
+		}
+	}
+	if pe := strings.TrimSpace(os.Getenv("PLANNER_ENABLED")); pe != "" {
+		if parseBool(pe, false) {
+			return "wallet"
+		}
+		return "off"
+	}
+	if c.WalletEnabled() {
+		return "auto"
+	}
+	return "off"
+}
+
+// EffectiveOrchestrationMode resolves ORCHESTRATION_MODE. Default off unless explicitly set.
+func (c *Config) EffectiveOrchestrationMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.OrchestrationMode))
+	switch mode {
+	case "", "off":
+		return "off"
+	case "auto", "always":
+		return mode
+	default:
+		return "off"
 	}
 }

@@ -124,6 +124,9 @@ func (r *Runner) runToolExecute(op Operation) (map[string]interface{}, error) {
 	}
 
 	t := tools.NewTools("", nil)
+	if op.ToolWallet != nil && strings.TrimSpace(op.ToolWallet.ERC20BalanceOutput) != "" {
+		t.SetWallet(newEvalWalletStub(op.ToolWallet.ERC20BalanceOutput))
+	}
 	argsJSON, err := json.Marshal(op.ToolArgs)
 	if err != nil {
 		return nil, err

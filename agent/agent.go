@@ -6,7 +6,9 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
+	"custom-agent/agent/planning"
 	"custom-agent/compaction"
 	"custom-agent/conversation"
 	"custom-agent/gateway"
@@ -21,8 +23,8 @@ import (
 )
 
 const (
-	parentModel   = "moonshotai/kimi-k2-instruct-0905"
-	maxToolRounds = 10
+	parentModel   = "openai/gpt-oss-120b"
+	maxToolRounds = 1000
 )
 
 // subagentModels are rotated per sub-agent index to spread load across Groq's per-model TPM quotas.
@@ -41,15 +43,17 @@ func subagentModelForIndex(idx int) string {
 
 // Agent processes messages and returns replies using an LLM.
 type Agent struct {
-	client       *openai.Client
-	systemPrompt string
-	compactor    *compaction.Compactor
-	tools        *tools.Tools
-	memoryStore  *memory.Store
-	convStore    *conversation.Store
-	skillsDir    string
-	skillsMgr    *skills.Manager
-	telemetry    *telemetry.Runtime
+	client        *openai.Client
+	systemPrompt  string
+	compactor     *compaction.Compactor
+	tools         *tools.Tools
+	memoryStore   *memory.Store
+	convStore     *conversation.Store
+	skillsDir     string
+	skillsMgr     *skills.Manager
+	telemetry     *telemetry.Runtime
+	planner       planning.RuntimeConfig
+	orchestration planning.OrchestrationRuntime
 }
 
 // New creates an Agent with the given LLM client, system prompt, tools, and optional stores.
@@ -61,15 +65,29 @@ func New(client *openai.Client, systemPrompt string, tokenThreshold int, toolSet
 		skillsMgr = skills.NewManager(skillsDir)
 	}
 	return &Agent{
-		client:       client,
-		systemPrompt: systemPrompt,
-		compactor:    compaction.NewCompactor(client, parentModel, tokenThreshold),
-		tools:        toolSet,
-		memoryStore:  toolSet.MemoryStore,
-		convStore:    convStore,
-		skillsDir:    skillsDir,
-		skillsMgr:    skillsMgr,
-		telemetry:    telem,
+		client:        client,
+		systemPrompt:  systemPrompt,
+		compactor:     compaction.NewCompactor(client, parentModel, tokenThreshold),
+		tools:         toolSet,
+		memoryStore:   toolSet.MemoryStore,
+		convStore:     convStore,
+		skillsDir:     skillsDir,
+		skillsMgr:     skillsMgr,
+		telemetry:     telem,
+		planner:       planning.RuntimeConfig{Enabled: false},
+		orchestration: planning.OrchestrationRuntime{Mode: planning.OrchestrationModeOff},
+	}
+}
+
+// SetPlanner configures plan-and-execute (e.g. from PLANNER_ENABLED / PLANNER_CAPABILITIES).
+func (a *Agent) SetPlanner(cfg planning.RuntimeConfig) {
+	if a != nil {
+		a.planner = cfg
+		if strings.TrimSpace(cfg.Orchestration.Mode) != "" {
+			a.orchestration = cfg.Orchestration
+		} else {
+			a.orchestration = planning.OrchestrationRuntime{Mode: planning.OrchestrationModeOff}
+		}
 	}
 }
 
@@ -209,7 +227,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	if a.tools.Wallet != nil && len(recent) > 0 && wantsWalletSend(text) {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: "CRITICAL: The user is asking to send funds. You MUST call wallet_execute_transfer now. Do NOT respond with text claiming you sent—only a tool call actually executes. Reply with a tool call.",
+			Content: "CRITICAL: The user is asking to send funds. For native coin use wallet_execute_transfer; for ERC-20 tokens (USDC, etc.) use wallet_execute_erc20_transfer. Do NOT respond with text claiming you sent—only a tool call actually executes. Reply with a tool call.",
 		})
 	}
 	for _, block := range contextBlocks {
@@ -241,16 +259,40 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		Content: text,
 	})
 
+	// Same context as the reactive loop minus the current user line: identity/skills, wallet nudge,
+	// memory & conversation blocks, compaction summary, recent session turns.
+	orchestrationContextPrefix := messages[:len(messages)-1]
+
+	if a.shouldTryGeneralOrchestration(ctx, text, orchestrationContextPrefix) {
+		if reply, ok := a.tryGeneralOrchestration(ctx, msg, text, orchestrationContextPrefix); ok {
+			finalReply = reply
+			return finalReply
+		}
+	}
+
+	if a.orchestration.Mode == planning.OrchestrationModeOff {
+		if a.shouldUseWalletPlanner(ctx, text) {
+			if reply, ok := a.tryWalletPlanner(ctx, msg, text); ok {
+				finalReply = reply
+				return finalReply
+			}
+		}
+	}
+
 	toolDefs := tools.Definitions()
 	mustExecuteWallet := a.tools.Wallet != nil && wantsWalletSend(text)
 	walletToolUsed := false
+	walletPipelineReactive := a.reactiveWalletContractPipeline()
 
 	for i := 0; i < maxToolRounds; i++ {
-		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		req := openai.ChatCompletionRequest{
 			Model:    parentModel,
 			Messages: messages,
 			Tools:    toolDefs,
-		})
+		}
+		t0 := time.Now()
+		resp, err := a.client.CreateChatCompletion(ctx, req)
+		a.recordLLMRound(ctx, "reactive_loop", i, req, resp, err, t0)
 		if err != nil {
 			log.Printf("[agent] LLM error: %v", err)
 			finalReply = "Sorry, I couldn't process that. Please try again."
@@ -268,35 +310,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if len(msgResp.ToolCalls) > 0 {
 			messages = append(messages, msgResp)
 			for _, tc := range msgResp.ToolCalls {
-				if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
+				if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_erc20_transfer" || tc.Function.Name == "wallet_execute_erc20_approve" || tc.Function.Name == "wallet_execute_contract_call" {
 					walletToolUsed = true
 				}
 				args := tc.Function.Arguments
 				var result string
-				if tc.Function.Name == "spawn_subagents" {
-					result = a.handleSpawnSubagents(ctx, args, msg)
-				} else {
-					if tc.Function.Name == "save_memory" || tc.Function.Name == "read_memory" {
-						if injected, err := tools.InjectMemoryArgs(args, msg.Platform, msg.UserID); err == nil {
-							args = injected
-						}
-					}
-					if tc.Function.Name == "create_scheduled_reminder" || tc.Function.Name == "list_reminders" || tc.Function.Name == "delete_reminder" {
-						if injected, err := tools.InjectReminderArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-							args = injected
-						}
-					}
-					if tc.Function.Name == "wallet_execute_transfer" || tc.Function.Name == "wallet_execute_contract_call" {
-						if injected, err := tools.InjectWalletArgs(args, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-							args = injected
-						}
-					}
-					var err error
-					result, err = a.tools.ExecuteToolWithContext(ctx, tc.Function.Name, args)
-					if err != nil {
-						result = "Error: " + err.Error()
-					}
-				}
+				result = a.executeToolForMessage(ctx, msg, tc.Function.Name, args, walletPipelineReactive)
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:       openai.ChatMessageRoleTool,
 					Content:    result,
@@ -315,34 +334,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: msgResp.Content,
 			})
-			if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
+			if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_erc20_transfer" || toolName == "wallet_execute_erc20_approve" || toolName == "wallet_execute_contract_call" {
 				walletToolUsed = true
 			}
 			var result string
-			if toolName == "spawn_subagents" {
-				result = a.handleSpawnSubagents(ctx, toolArgs, msg)
-			} else {
-				if toolName == "save_memory" || toolName == "read_memory" {
-					if injected, err := tools.InjectMemoryArgs(toolArgs, msg.Platform, msg.UserID); err == nil {
-						toolArgs = injected
-					}
-				}
-				if toolName == "create_scheduled_reminder" || toolName == "list_reminders" || toolName == "delete_reminder" {
-					if injected, err := tools.InjectReminderArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-						toolArgs = injected
-					}
-				}
-				if toolName == "wallet_execute_transfer" || toolName == "wallet_execute_contract_call" {
-					if injected, err := tools.InjectWalletArgs(toolArgs, msg.Platform, msg.UserID, msg.ChatID); err == nil {
-						toolArgs = injected
-					}
-				}
-				var err error
-				result, err = a.tools.ExecuteToolWithContext(ctx, toolName, toolArgs)
-				if err != nil {
-					result = "Error: " + err.Error()
-				}
-			}
+			result = a.executeToolForMessage(ctx, msg, toolName, toolArgs, walletPipelineReactive)
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    result,
@@ -361,7 +357,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 		if mustExecuteWallet && !walletToolUsed && claimsWalletWasSent(reply) {
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleSystem,
-				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
+				Content: "You claimed a wallet transaction was sent, but no wallet execution tool was called in this turn. Do not claim success. Call wallet_execute_transfer (native), wallet_execute_erc20_transfer (ERC-20 send), wallet_execute_erc20_approve (ERC-20 allowance), or wallet_execute_contract_call, or ask a clarifying question if details are missing.",
 			})
 			continue
 		}

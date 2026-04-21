@@ -36,7 +36,8 @@ func (g *TelegramGateway) Send(ctx context.Context, platform, userID, chatID, te
 	if err != nil {
 		return fmt.Errorf("telegram: invalid chat_id %q: %w", chatID, err)
 	}
-	msg := tgbotapi.NewMessage(cid, text)
+	msg := tgbotapi.NewMessage(cid, FormatForTelegramReply(text))
+	msg.ParseMode = tgbotapi.ModeHTML
 	_, err = bot.Send(msg)
 	return err
 }
@@ -81,7 +82,8 @@ func (g *TelegramGateway) Run(ctx context.Context, handler Handler) error {
 
 			reply := handler(incoming)
 
-			response := tgbotapi.NewMessage(msg.Chat.ID, reply)
+			response := tgbotapi.NewMessage(msg.Chat.ID, FormatForTelegramReply(reply))
+			response.ParseMode = tgbotapi.ModeHTML
 			response.ReplyToMessageID = msg.MessageID
 			if _, err := bot.Send(response); err != nil {
 				log.Printf("[telegram] send error: %v", err)

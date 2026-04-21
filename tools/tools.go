@@ -3,9 +3,11 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,14 +22,16 @@ import (
 	"custom-agent/reminders"
 	"custom-agent/skills"
 	"custom-agent/telemetry"
+	"custom-agent/wallet/abi"
 	"custom-agent/x402client"
 
+	"github.com/ethereum/go-ethereum/common"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_erc20_balance", "wallet_execute_transfer", "wallet_execute_erc20_transfer", "wallet_execute_erc20_approve", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
@@ -47,10 +51,15 @@ type WalletService interface {
 	WalletAddress() string
 	DefaultChainID() int64
 	GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error)
+	ERC20Balance(ctx context.Context, chainID int64, token string) (string, error)
 	ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteContractCall(ctx context.Context, chainID int64, to, dataHex, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteApproved(ctx context.Context, approvalID, platform, userID, chatID string) (string, error)
 	ListTransactions(chainID int64, limit int) (string, error)
+	// Planner extensions (optional for mocks; required for production wallet.Service).
+	WalletPreviewContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) (method string, decision string, gasLimit uint64, err error)
+	WalletSimulateContract(ctx context.Context, chainID int64, to, dataHex, valueWei string) error
+	WalletReceiptSummary(ctx context.Context, chainID int64, txHash string) (string, error)
 }
 
 // SkillsManager is the interface for listing and reading skills. Optional.
@@ -340,7 +349,7 @@ func Definitions() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "http_request",
-				Description: "Make an HTTP request to a URL. Supports GET, POST, etc. When x402 is configured, automatically pays for 402-protected APIs. Use for fetching data from APIs, including paid x402 endpoints. Returns status, headers, and body (truncated if large).",
+				Description: "Make an HTTP request to a URL. Supports GET, POST, etc. When x402 is configured, automatically pays for 402-protected APIs. Use for fetching data from APIs, including paid x402 endpoints. Returns status, headers, and body (truncated if large). For ERC-20 balances of this agent's wallet, prefer wallet_erc20_balance (uses configured RPC) instead of raw eth_call via http_request.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
@@ -357,12 +366,27 @@ func Definitions() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "wallet_get_balance",
-				Description: "Get the native token (ETH) balance of the wallet in wei. Use when the user asks about balance or funds. Omit chain_id for default chain.",
+				Description: "Get the native chain coin balance (e.g. ETH on Ethereum) of the wallet in wei only. Does not return ERC-20 token balances—for tokens (USDC, etc.) use wallet_erc20_balance. Omit chain_id for default chain.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_erc20_balance",
+				Description: "Read-only: ERC-20 token balance for this agent's configured wallet via eth_call (balanceOf + decimals). Params: token (ERC-20 contract 0x...), optional chain_id (e.g. 8453 for Base). Returns raw amount, decimals, and human-readable formatted balance. No transaction is sent.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"token":    {Type: jsonschema.String, Description: "ERC-20 token contract address (0x...), e.g. official USDC on Base"},
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"token"},
 				},
 			},
 		},
@@ -385,8 +409,42 @@ func Definitions() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
+				Name:        "wallet_execute_erc20_transfer",
+				Description: "REQUIRED to send ERC-20 tokens (USDC, DAI, etc.): call this for standard token transfers. Calldata is built in code (do not hand-encode hex). Params: token (ERC-20 contract 0x...), to (recipient 0x...), amount (decimal string of token smallest units, e.g. 100000 for 0.1 USDC with 6 decimals). Returns tx hash and explorer link.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"token":    {Type: jsonschema.String, Description: "ERC-20 token contract address (0x...), e.g. Base USDC"},
+						"to":       {Type: jsonschema.String, Description: "Recipient address (0x...)"},
+						"amount":   {Type: jsonschema.String, Description: "Amount in token base units as decimal string (e.g. 100000 for 0.1 USDC with 6 decimals)"},
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"token", "to", "amount"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_execute_erc20_approve",
+				Description: "Set ERC-20 allowance for a spender (router, bridge, etc.). Calldata is built in code. Params: token (ERC-20 contract 0x...), spender (address allowed to pull tokens), amount (decimal string of token base units; use 0 to revoke). For unlimited approval some UIs use 2^256-1 as a decimal string.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"token":    {Type: jsonschema.String, Description: "ERC-20 token contract address (0x...)"},
+						"spender":  {Type: jsonschema.String, Description: "Spender contract or address (0x...)"},
+						"amount":   {Type: jsonschema.String, Description: "Allowance in token base units as decimal string (0 revokes)"},
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"token", "spender", "amount"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
 				Name:        "wallet_execute_contract_call",
-				Description: "REQUIRED to execute contract calls: call this tool when the user asks to call a contract or send to a contract. You cannot execute without invoking this tool. Params: to, data (hex), value_wei (0 for none). Returns tx hash and explorer link.",
+				Description: "Broadcast arbitrary contract calls with raw hex calldata: swaps, complex interactions. Prefer wallet_execute_erc20_transfer / wallet_execute_erc20_approve for standard ERC-20 methods. Params: to (contract), data (hex), value_wei (0 for none). Do not use for read-only view calls—use wallet_erc20_balance for balances.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
@@ -506,7 +564,7 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		if t.Telemetry != nil {
-			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "")
+			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "", argsJSON)
 		}
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
@@ -537,8 +595,14 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 		out, err = t.httpRequest(strArgs, args)
 	case "wallet_get_balance":
 		out, err = t.walletGetBalance(strArgs, args)
+	case "wallet_erc20_balance":
+		out, err = t.walletERC20Balance(strArgs, args)
 	case "wallet_execute_transfer":
 		out, err = t.walletExecuteTransfer(strArgs, args)
+	case "wallet_execute_erc20_transfer":
+		out, err = t.walletExecuteERC20Transfer(strArgs, args)
+	case "wallet_execute_erc20_approve":
+		out, err = t.walletExecuteERC20Approve(strArgs, args)
 	case "wallet_execute_contract_call":
 		out, err = t.walletExecuteContractCall(strArgs, args)
 	case "wallet_list_transactions":
@@ -555,7 +619,7 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 		err = fmt.Errorf("unknown tool: %s", name)
 	}
 	if t.Telemetry != nil {
-		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out)
+		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out, argsJSON)
 	}
 	return out, err
 }
@@ -612,6 +676,25 @@ func (t *Tools) walletGetBalance(args map[string]string, rawArgs map[string]inte
 	return "Balance: " + bal + " wei", nil
 }
 
+func (t *Tools) walletERC20Balance(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	token := strings.TrimSpace(args["token"])
+	if token == "" {
+		return "Error: token (ERC-20 contract address) is required.", nil
+	}
+	if !common.IsHexAddress(token) {
+		return "Error: token must be a valid 0x-prefixed address.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	s, err := t.Wallet.ERC20Balance(context.Background(), chainID, token)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return s, nil
+}
+
 func (t *Tools) walletExecuteTransfer(args map[string]string, rawArgs map[string]interface{}) (string, error) {
 	if t.Wallet == nil {
 		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
@@ -627,6 +710,84 @@ func (t *Tools) walletExecuteTransfer(args map[string]string, rawArgs map[string
 	}
 	chainID := parseChainID(args, rawArgs)
 	return t.Wallet.ExecuteTransfer(context.Background(), chainID, args["to"], args["value_wei"], platform, userID, chatID)
+}
+
+func (t *Tools) walletExecuteERC20Transfer(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	platform := args["platform"]
+	userID := args["user_id"]
+	chatID := args["chat_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context (platform, user_id).", nil
+	}
+	if chatID == "" {
+		chatID = userID
+	}
+	token := strings.TrimSpace(args["token"])
+	toAddr := strings.TrimSpace(args["to"])
+	amountStr := strings.TrimSpace(args["amount"])
+	if token == "" || toAddr == "" || amountStr == "" {
+		return "Error: token, to, and amount are required.", nil
+	}
+	if !common.IsHexAddress(token) || !common.IsHexAddress(toAddr) {
+		return "Error: token and to must be valid 0x-prefixed addresses.", nil
+	}
+	amt := new(big.Int)
+	if _, ok := amt.SetString(amountStr, 10); !ok {
+		return "Error: amount must be a decimal integer string (token base units).", nil
+	}
+	if amt.Sign() <= 0 {
+		return "Error: amount must be positive.", nil
+	}
+	recipient := common.HexToAddress(toAddr)
+	data, err := abi.EncodeERC20Transfer(recipient, amt)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	dataHex := "0x" + hex.EncodeToString(data)
+	chainID := parseChainID(args, rawArgs)
+	return t.Wallet.ExecuteContractCall(context.Background(), chainID, token, dataHex, "0", platform, userID, chatID)
+}
+
+func (t *Tools) walletExecuteERC20Approve(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	platform := args["platform"]
+	userID := args["user_id"]
+	chatID := args["chat_id"]
+	if platform == "" || userID == "" {
+		return "Error: missing user context (platform, user_id).", nil
+	}
+	if chatID == "" {
+		chatID = userID
+	}
+	token := strings.TrimSpace(args["token"])
+	spenderAddr := strings.TrimSpace(args["spender"])
+	amountStr := strings.TrimSpace(args["amount"])
+	if token == "" || spenderAddr == "" || amountStr == "" {
+		return "Error: token, spender, and amount are required.", nil
+	}
+	if !common.IsHexAddress(token) || !common.IsHexAddress(spenderAddr) {
+		return "Error: token and spender must be valid 0x-prefixed addresses.", nil
+	}
+	amt := new(big.Int)
+	if _, ok := amt.SetString(amountStr, 10); !ok {
+		return "Error: amount must be a decimal integer string (token base units).", nil
+	}
+	if amt.Sign() < 0 {
+		return "Error: amount must be non-negative.", nil
+	}
+	spender := common.HexToAddress(spenderAddr)
+	data, err := abi.EncodeERC20Approve(spender, amt)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	dataHex := "0x" + hex.EncodeToString(data)
+	chainID := parseChainID(args, rawArgs)
+	return t.Wallet.ExecuteContractCall(context.Background(), chainID, token, dataHex, "0", platform, userID, chatID)
 }
 
 func (t *Tools) walletExecuteContractCall(args map[string]string, rawArgs map[string]interface{}) (string, error) {
