@@ -52,7 +52,7 @@ Wallet tool choice (avoid wrong tools):
 - Past txs: wallet_list_transactions.
 
 General rules:
-- Do as many steps as you need. Order steps so dependencies make sense; depends_on lists step ids that must complete before this step (earlier ids only).
+- Do as many steps as you need. depends_on lists step ids that must finish before this step; you may reference any step id in the plan (not only steps listed earlier in the JSON array). The runtime executes steps in dependency order.
 - Read-only research: web_search, read_file, read_memory, http_request, list_skills, read_skill, read_skill_script.
 - Mutating filesystem: write_file, run_command (only if needed).
 - risk: "wallet" for steps that sign and broadcast; "mutating" for writes/commands; "read_only" for searches, http GETs, wallet_erc20_balance, wallet_get_balance, wallet_list_transactions.
@@ -92,6 +92,8 @@ If the task is a single trivial chat with no tools, output: {"goal":"","steps":[
 		log.Printf("[orchestration] policy: %v", err)
 		return "", false
 	}
+
+	plan = a.lintOrchestrationPlanAllowedTools(ctx, plan, userText, contextPrefix)
 
 	for _, s := range plan.Steps {
 		log.Printf("[orchestration] planner step %s allowed_tools=%v risk=%s", s.ID, s.AllowedTools, s.Risk)
@@ -147,10 +149,14 @@ func (a *Agent) shouldSkipOrchestrationTrivial(text string) bool {
 }
 
 func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMessage, userText string, plan *planning.OrchestrationPlan, contextPrefix []openai.ChatCompletionMessage) (string, error) {
+	orderedSteps, err := planning.OrchestrationExecutionOrder(plan.Steps)
+	if err != nil {
+		return "", err
+	}
 	stepOut := make(map[string]string)
 	llmRoundSeq := 0
 
-	for stepIdx, st := range plan.Steps {
+	for stepIdx, st := range orderedSteps {
 		var prior strings.Builder
 		for _, dep := range st.DependsOn {
 			if out, ok := stepOut[dep]; ok && out != "" {
@@ -307,7 +313,7 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 
 	// Final synthesis
 	var syn strings.Builder
-	for _, st := range plan.Steps {
+	for _, st := range orderedSteps {
 		if o, ok := stepOut[st.ID]; ok {
 			syn.WriteString("### ")
 			syn.WriteString(st.ID)
