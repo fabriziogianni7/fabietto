@@ -20,6 +20,9 @@ func (s *stubWallet) DefaultChainID() int64 { return 1 }
 func (s *stubWallet) GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error) {
 	return "0", nil
 }
+func (s *stubWallet) ERC20Balance(ctx context.Context, chainID int64, token string) (string, error) {
+	return "", nil
+}
 func (s *stubWallet) ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error) {
 	return "", nil
 }

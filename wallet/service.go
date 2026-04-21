@@ -10,6 +10,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	walletabi "custom-agent/wallet/abi"
 	"custom-agent/wallet/account"
 	"custom-agent/wallet/approval"
 	"custom-agent/wallet/calldata"
@@ -123,6 +124,64 @@ func (s *Service) GetBalanceString(ctx context.Context, chainID int64, block int
 		return "", err
 	}
 	return bal.String(), nil
+}
+
+// ERC20Balance returns formatted ERC-20 balance for the configured wallet via eth_call (balanceOf + decimals).
+// chainID 0 = default chain. tokenAddr is the ERC-20 contract (0x...).
+func (s *Service) ERC20Balance(ctx context.Context, chainID int64, tokenAddr string) (string, error) {
+	cid, err := s.resolveChainID(chainID)
+	if err != nil {
+		return "", err
+	}
+	if !common.IsHexAddress(tokenAddr) {
+		return "", fmt.Errorf("invalid token address")
+	}
+	token := common.HexToAddress(tokenAddr)
+	_, prov, err := s.getAccount(cid)
+	if err != nil {
+		return "", err
+	}
+	owner := s.signer.Address()
+	from := owner
+	data := walletabi.EncodeERC20BalanceOf(owner)
+	ret, err := prov.CallContract(ctx, &from, &token, big.NewInt(0), data)
+	if err != nil {
+		return "", fmt.Errorf("balanceOf: %w", err)
+	}
+	raw, err := walletabi.DecodeERC20BalanceReturn(ret)
+	if err != nil {
+		return "", fmt.Errorf("decode balance: %w", err)
+	}
+
+	decimals := uint8(18)
+	decData, err := walletabi.EncodeERC20Decimals()
+	if err == nil {
+		dret, derr := prov.CallContract(ctx, &from, &token, big.NewInt(0), decData)
+		if derr == nil && len(dret) > 0 {
+			if d, derr := walletabi.DecodeERC20DecimalsReturn(dret); derr == nil {
+				decimals = d
+			}
+		}
+	}
+
+	formatted := formatERC20Amount(raw, decimals)
+	return fmt.Sprintf("Token %s balance for %s (chain %d): raw=%s decimals=%d formatted=%s",
+		token.Hex(), owner.Hex(), cid, raw.String(), decimals, formatted), nil
+}
+
+func formatERC20Amount(raw *big.Int, decimals uint8) string {
+	if decimals == 0 {
+		return raw.String()
+	}
+	denom := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	rat := new(big.Rat).SetFrac(raw, denom)
+	s := rat.FloatString(int(decimals))
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-" {
+		return "0"
+	}
+	return s
 }
 
 // ExecuteTransfer sends native token to an address. valueWei is wei as string.

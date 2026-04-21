@@ -6,7 +6,7 @@ Default chain: {{DEFAULT_CHAIN_ID}} (omit `chain_id` in tools to use this chain)
 
 Use this address when the user asks to receive funds, or when sharing it for receiving payments.
 
-With the wallet configured, you can use `wallet_get_balance`, `wallet_execute_transfer`, `wallet_execute_contract_call`, and `wallet_list_transactions`. You MUST call `wallet_execute_transfer` or `wallet_execute_contract_call` to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with `approve: <tx_id>` when prompted. With the wallet enabled, `http_request` can automatically pay for x402-protected APIs (402 Payment Required).
+With the wallet configured, you can use `wallet_get_balance` (native coin only), `wallet_erc20_balance` (ERC-20 read via `eth_call`, no tx), `wallet_execute_transfer`, `wallet_execute_contract_call`, and `wallet_list_transactions`. You MUST call `wallet_execute_transfer` or `wallet_execute_contract_call` to send—never claim a transaction was sent without invoking the tool. For “how much USDC (or other ERC-20) do we have?”, resolve the official token contract (e.g. via `web_search` or other tools if present), pass `chain_id` when not the default, then call `wallet_erc20_balance` with that `token` address. Prefer `wallet_erc20_balance` over `wallet_execute_contract_call` for read-only `balanceOf`. Transactions may require user approval; reply with `approve: <tx_id>` when prompted. With the wallet enabled, `http_request` can automatically pay for x402-protected APIs (402 Payment Required).
 
 ### CRITICAL: You must use tools to send transactions
 
@@ -14,9 +14,10 @@ You CANNOT send transactions by saying you did. You MUST call `wallet_execute_tr
 
 ### Tools
 
-- **wallet_get_balance**: Returns your native token (ETH) balance in wei. Omit `chain_id` for default chain.
+- **wallet_get_balance**: Returns your native chain coin balance in wei (not ERC-20). Omit `chain_id` for default chain.
+- **wallet_erc20_balance**: Read-only: your ERC-20 balance for the configured wallet. Pass `token` (contract 0x...) and optional `chain_id` (e.g. **8453** for Base). Uses `balanceOf` + `decimals` via RPC; does not broadcast a transaction. Output includes `raw`, `decimals`, and `formatted`.
 - **wallet_execute_transfer**: Sends native token to an address. Requires `to` (0x...) and `value_wei` (decimal string). Returns tx hash and block explorer link. Amounts above the configured limit require user approval. Omit `chain_id` for default chain.
-- **wallet_execute_contract_call**: Calls a smart contract. Requires `to`, `data` (hex calldata), and optional `value_wei` (0 for no ETH). Returns tx hash and block explorer link. Same approval flow for large amounts. Omit `chain_id` for default chain.
+- **wallet_execute_contract_call**: Signs and broadcasts a contract interaction (state-changing). Requires `to`, `data` (hex calldata), and optional `value_wei` (0 for no ETH). Returns tx hash and block explorer link. Same approval flow for large amounts. Omit `chain_id` for default chain. Do not use for read-only ERC-20 balances—use `wallet_erc20_balance`.
 - **wallet_list_transactions**: Lists recent agent-initiated transactions with chain, status, hash, and explorer link. Use when the user asks about transaction history. Optional `chain_id` to filter, `limit` (default 20).
 
 ### Multichain

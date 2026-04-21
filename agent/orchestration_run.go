@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"custom-agent/agent/planning"
@@ -14,7 +15,10 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-const maxOrchestrationStepRounds = 5
+const maxOrchestrationStepRounds = 14
+
+// HTTP status lines from http_request look like "Status: 404 404 Not Found".
+var orchestrationHTTPRetryStatus = regexp.MustCompile(`(?i)Status:\s+(4\d\d|5\d\d)\s`)
 
 // tryGeneralOrchestration builds a plan via LLM, validates, executes steps, optional synthesis.
 // Returns ("", false) to use the reactive loop.
@@ -33,12 +37,13 @@ func (a *Agent) tryGeneralOrchestration(ctx context.Context, msg gateway.Incomin
 Shape:
 {"goal":"one line","steps":[{"id":"s1","description":"what to do in this step","allowed_tools":["tool_name",...],"depends_on":[],"risk":"read_only|mutating|wallet"}]}
 Rules:
-- 1 to 12 steps. Each step must list ONLY tools needed for that step from the allowed set (subset of real tool names).
+- Do as many steps as you need to accomplish a goal. Each step must list ONLY tools needed for that step from the allowed set (subset of real tool names).
 - Order steps so dependencies make sense. depends_on lists step ids that must complete before this step (earlier ids only).
 - For read-only research use: web_search, read_file, read_memory, http_request, list_skills, read_skill, read_skill_script.
 - For mutating filesystem: write_file, run_command (only if needed).
-- For wallet: wallet_get_balance, wallet_list_transactions, wallet_execute_transfer, wallet_execute_contract_call — only if user needs on-chain action.
-- risk: use "wallet" for steps that send transactions; "mutating" for writes/commands; "read_only" otherwise.
+- For wallet reads (no tx): wallet_get_balance (native coin only), wallet_erc20_balance (ERC-20 balance for configured wallet), wallet_list_transactions.
+- For wallet sends / state-changing on-chain actions: wallet_execute_transfer, wallet_execute_contract_call.
+- risk: use "wallet" for steps that sign and broadcast transactions; "mutating" for writes/commands; "read_only" for searches, http GETs, wallet_erc20_balance, wallet_get_balance, wallet_list_transactions.
 - Do not include spawn_subagents in plans.
 If the task is a single trivial chat with no tools, output: {"goal":"","steps":[]}`
 
@@ -156,6 +161,7 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 		if prior.Len() > 0 {
 			sys += "Context from previous steps:\n" + prior.String()
 		}
+		sys += "\nRules: If a tool returns an error, invalid arguments, HTTP 4xx/5xx, or empty/wrong results, you MUST call tools again with corrected parameters (e.g. required fields like web_search \"query\"), a different URL, or another source—do not treat one failed call as the end of the step. When prior tool output already contains useful data (e.g. search hits or HTTP 200 bodies), your summary must reflect that success; do not claim the step failed entirely unless every attempt did."
 		sys += "\nRespond with tool calls until this step is done, then a short text summary of what was learned or done for this step."
 
 		msgs := []openai.ChatCompletionMessage{
@@ -181,6 +187,7 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 			mr := resp.Choices[0].Message
 			if len(mr.ToolCalls) > 0 {
 				msgs = append(msgs, mr)
+				anyRetry := false
 				for _, tc := range mr.ToolCalls {
 					if strings.TrimSpace(tc.Function.Name) == "" {
 						continue
@@ -193,10 +200,19 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 					}
 					res := a.executeToolForMessage(ctx, msg, tc.Function.Name, tc.Function.Arguments, walletPipe)
 					lastToolOut = res
+					if orchestrationToolOutputSuggestsRetry(res) {
+						anyRetry = true
+					}
 					msgs = append(msgs, openai.ChatCompletionMessage{
 						Role:       openai.ChatMessageRoleTool,
 						Content:    res,
 						ToolCallID: tc.ID,
+					})
+				}
+				if anyRetry && round < maxOrchestrationStepRounds-1 {
+					msgs = append(msgs, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleSystem,
+						Content: orchestrationRetryAfterToolFailureNudge(),
 					})
 				}
 				continue
@@ -211,10 +227,23 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 					ToolCallID: "fallback",
 					Name:       toolName,
 				})
+				if orchestrationToolOutputSuggestsRetry(res) && round < maxOrchestrationStepRounds-1 {
+					msgs = append(msgs, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleSystem,
+						Content: orchestrationRetryAfterToolFailureNudge(),
+					})
+				}
 				continue
 			}
 			txt := strings.TrimSpace(mr.Content)
 			if txt != "" {
+				if lastToolOut != "" && orchestrationToolOutputSuggestsRetry(lastToolOut) && round < maxOrchestrationStepRounds-1 {
+					msgs = append(msgs, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleSystem,
+						Content: orchestrationRetryBeforeStepSummaryNudge(),
+					})
+					continue
+				}
 				stepBuf.WriteString(txt)
 			}
 			break
@@ -255,7 +284,7 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 	synResp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model: parentModel,
 		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: "Summarize the following step results into a clear, concise answer for the user. Do not invent facts."},
+			{Role: openai.ChatMessageRoleSystem, Content: orchestrationSynthesisSystemPrompt()},
 			{Role: openai.ChatMessageRoleUser, Content: "User request:\n" + userText + "\n\nStep results:\n" + summary},
 		},
 	})
@@ -267,6 +296,44 @@ func (a *Agent) runOrchestrationPlan(ctx context.Context, msg gateway.IncomingMe
 		return summary, nil
 	}
 	return final, nil
+}
+
+func orchestrationToolOutputSuggestsRetry(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "Error:") {
+		return true
+	}
+	low := strings.ToLower(s)
+	if strings.Contains(low, "invalid arguments") {
+		return true
+	}
+	if strings.Contains(low, "search failed:") {
+		return true
+	}
+	if orchestrationHTTPRetryStatus.MatchString(s) {
+		return true
+	}
+	return false
+}
+
+func orchestrationRetryAfterToolFailureNudge() string {
+	return "The last tool result indicates a failed or invalid request (missing args, HTTP error, or tool error). Do not end this step yet: call tools again with corrected arguments (e.g. web_search requires a non-empty \"query\" JSON field) or try a different URL/source. Only after you have a successful result or exhaust reasonable alternatives, write the short step summary."
+}
+
+func orchestrationRetryBeforeStepSummaryNudge() string {
+	return "The last tool output shows an error or HTTP failure, but you responded with text only. Use another tool call with fixed parameters or another endpoint first; do not summarize this step as a total failure while a retry could succeed."
+}
+
+func orchestrationSynthesisSystemPrompt() string {
+	return "Summarize the following step results into a clear, concise answer for the user.\n" +
+		"Rules:\n" +
+		"- Base your answer ONLY on the step results text. Do not invent facts, failures, or missing parameters that are not stated there.\n" +
+		"- If step results include successful tool output (search hits, HTTP 200 response bodies, file contents), you MUST present that information. Do not claim the whole task failed if some steps clearly returned useful data.\n" +
+		"- You may mention partial failures (e.g. one URL returned 404) alongside what succeeded.\n" +
+		"- If step results are internally contradictory, prefer describing what the text actually shows rather than guessing."
 }
 
 func truncateForOrchestration(s string, max int) string {

@@ -58,16 +58,6 @@ func main() {
 	if cfg.SkillsDir != "" {
 		systemPrompt += "\n\nWhen the user asks to add, create, or install a skill (even without saying newSkill), compose the SKILL.md content with YAML frontmatter and body, then use write_skill. The tool automatically runs security and feasibility checks before saving."
 	}
-	if cfg.WalletEnabled() {
-		toolInstruction += " When the wallet is configured, you can use wallet_get_balance, wallet_execute_transfer, wallet_execute_contract_call, and wallet_list_transactions. You MUST call wallet_execute_transfer or wallet_execute_contract_call to send—never claim a transaction was sent without invoking the tool. Transactions may require user approval; reply with approve: <tx_id> when prompted. With wallet enabled, http_request can automatically pay for x402-protected APIs (402 Payment Required)."
-	}
-	if cfg.EffectivePlannerMode() != "off" {
-		toolInstruction += " When the wallet planner is on (PLANNER_MODE auto/wallet/always_wallet), many on-chain intents use an internal plan-and-execute pipeline (policy preview, simulation, then broadcast); you may not see separate tool calls for those steps."
-	}
-	if cfg.EffectiveOrchestrationMode() != "off" {
-		toolInstruction += " When ORCHESTRATION_MODE is auto or always, multi-step tasks may use an internal orchestration planner before normal tool use."
-	}
-	toolInstruction += "\n"
 
 	llmConfig := openai.DefaultConfig(cfg.GroqAPIKey)
 	llmConfig.BaseURL = "https://api.groq.com/openai/v1"

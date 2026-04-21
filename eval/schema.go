@@ -14,12 +14,18 @@ type EvalCase struct {
 	Assertions    []Assertion `json:"assertions"`
 }
 
+// EvalToolWallet injects a stub WalletService for tool_execute cases.
+type EvalToolWallet struct {
+	ERC20BalanceOutput string `json:"erc20_balance_output,omitempty"`
+}
+
 type Operation struct {
 	Type string `json:"type"`
 
 	// Generic tool op
-	ToolName string                 `json:"tool_name,omitempty"`
-	ToolArgs map[string]interface{} `json:"tool_args,omitempty"`
+	ToolName   string                 `json:"tool_name,omitempty"`
+	ToolArgs   map[string]interface{} `json:"tool_args,omitempty"`
+	ToolWallet *EvalToolWallet        `json:"tool_wallet,omitempty"`
 
 	// Parse-tool-call op
 	Content string `json:"content,omitempty"`

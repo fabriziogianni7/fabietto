@@ -22,12 +22,13 @@ import (
 	"custom-agent/telemetry"
 	"custom-agent/x402client"
 
+	"github.com/ethereum/go-ethereum/common"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 // Tool names for fallback parsing
-var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
+var toolNames = []string{"run_command", "read_file", "write_file", "web_search", "save_memory", "read_memory", "create_scheduled_reminder", "list_reminders", "delete_reminder", "spawn_subagents", "http_request", "wallet_get_balance", "wallet_erc20_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions", "list_skills", "read_skill", "read_skill_script", "write_skill"}
 
 // ReadOnlyToolNames are tools allowed for stateless sub-agents (no session/memory/reminder writes).
 var ReadOnlyToolNames = map[string]bool{
@@ -47,6 +48,7 @@ type WalletService interface {
 	WalletAddress() string
 	DefaultChainID() int64
 	GetBalanceString(ctx context.Context, chainID int64, block interface{}) (string, error)
+	ERC20Balance(ctx context.Context, chainID int64, token string) (string, error)
 	ExecuteTransfer(ctx context.Context, chainID int64, to, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteContractCall(ctx context.Context, chainID int64, to, dataHex, valueWei, platform, userID, chatID string) (string, error)
 	ExecuteApproved(ctx context.Context, approvalID, platform, userID, chatID string) (string, error)
@@ -344,7 +346,7 @@ func Definitions() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "http_request",
-				Description: "Make an HTTP request to a URL. Supports GET, POST, etc. When x402 is configured, automatically pays for 402-protected APIs. Use for fetching data from APIs, including paid x402 endpoints. Returns status, headers, and body (truncated if large).",
+				Description: "Make an HTTP request to a URL. Supports GET, POST, etc. When x402 is configured, automatically pays for 402-protected APIs. Use for fetching data from APIs, including paid x402 endpoints. Returns status, headers, and body (truncated if large). For ERC-20 balances of this agent's wallet, prefer wallet_erc20_balance (uses configured RPC) instead of raw eth_call via http_request.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
@@ -361,12 +363,27 @@ func Definitions() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "wallet_get_balance",
-				Description: "Get the native token (ETH) balance of the wallet in wei. Use when the user asks about balance or funds. Omit chain_id for default chain.",
+				Description: "Get the native chain coin balance (e.g. ETH on Ethereum) of the wallet in wei only. Does not return ERC-20 token balances—for tokens (USDC, etc.) use wallet_erc20_balance. Omit chain_id for default chain.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
 					},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "wallet_erc20_balance",
+				Description: "Read-only: ERC-20 token balance for this agent's configured wallet via eth_call (balanceOf + decimals). Params: token (ERC-20 contract 0x...), optional chain_id (e.g. 8453 for Base). Returns raw amount, decimals, and human-readable formatted balance. No transaction is sent.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"token":    {Type: jsonschema.String, Description: "ERC-20 token contract address (0x...), e.g. official USDC on Base"},
+						"chain_id": {Type: jsonschema.Integer, Description: "Optional chain ID. Omit to use default chain."},
+					},
+					Required: []string{"token"},
 				},
 			},
 		},
@@ -390,7 +407,7 @@ func Definitions() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "wallet_execute_contract_call",
-				Description: "REQUIRED to execute contract calls: call this tool when the user asks to call a contract or send to a contract. You cannot execute without invoking this tool. Params: to, data (hex), value_wei (0 for none). Returns tx hash and explorer link.",
+				Description: "REQUIRED to broadcast state-changing contract interactions (signed tx): swaps, transfers of tokens via contract, etc. Params: to, data (hex), value_wei (0 for none). Returns tx hash and explorer link. Do not use for read-only view calls (e.g. token balanceOf)—use wallet_erc20_balance for standard ERC-20 balances or extend with a dedicated read tool.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
@@ -541,6 +558,8 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 		out, err = t.httpRequest(strArgs, args)
 	case "wallet_get_balance":
 		out, err = t.walletGetBalance(strArgs, args)
+	case "wallet_erc20_balance":
+		out, err = t.walletERC20Balance(strArgs, args)
 	case "wallet_execute_transfer":
 		out, err = t.walletExecuteTransfer(strArgs, args)
 	case "wallet_execute_contract_call":
@@ -614,6 +633,25 @@ func (t *Tools) walletGetBalance(args map[string]string, rawArgs map[string]inte
 		return "Error: " + err.Error(), nil
 	}
 	return "Balance: " + bal + " wei", nil
+}
+
+func (t *Tools) walletERC20Balance(args map[string]string, rawArgs map[string]interface{}) (string, error) {
+	if t.Wallet == nil {
+		return "Wallet not configured. Set EVM_RPC_URL and WALLET_PRIVATE_KEY to enable.", nil
+	}
+	token := strings.TrimSpace(args["token"])
+	if token == "" {
+		return "Error: token (ERC-20 contract address) is required.", nil
+	}
+	if !common.IsHexAddress(token) {
+		return "Error: token must be a valid 0x-prefixed address.", nil
+	}
+	chainID := parseChainID(args, rawArgs)
+	s, err := t.Wallet.ERC20Balance(context.Background(), chainID, token)
+	if err != nil {
+		return "Error: " + err.Error(), nil
+	}
+	return s, nil
 }
 
 func (t *Tools) walletExecuteTransfer(args map[string]string, rawArgs map[string]interface{}) (string, error) {

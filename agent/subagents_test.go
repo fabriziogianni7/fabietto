@@ -102,7 +102,7 @@ func TestRunSubagents_OrderPreserved(t *testing.T) {
 func TestSubagents_NoWalletTools(t *testing.T) {
 	// Wallet tools must not be exposed to subagents (security: no state-changing wallet ops).
 	subDefs := tools.DefinitionsForSubagent()
-	walletTools := []string{"wallet_get_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
+	walletTools := []string{"wallet_get_balance", "wallet_erc20_balance", "wallet_execute_transfer", "wallet_execute_contract_call", "wallet_list_transactions"}
 	for _, name := range walletTools {
 		for _, td := range subDefs {
 			if td.Function != nil && td.Function.Name == name {
