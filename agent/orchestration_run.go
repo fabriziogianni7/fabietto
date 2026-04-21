@@ -93,6 +93,8 @@ If the task is a single trivial chat with no tools, output: {"goal":"","steps":[
 		return "", false
 	}
 
+	plan = a.lintOrchestrationPlanAllowedTools(ctx, plan, userText, contextPrefix)
+
 	for _, s := range plan.Steps {
 		log.Printf("[orchestration] planner step %s allowed_tools=%v risk=%s", s.ID, s.AllowedTools, s.Risk)
 	}
