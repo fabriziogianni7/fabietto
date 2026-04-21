@@ -36,7 +36,7 @@ const (
 	MaxOrchestrationSteps = 12
 )
 
-// ValidateOrchestrationPlan checks structure, depends_on DAG, and tool names.
+// ValidateOrchestrationPlan checks structure, depends_on DAG (acyclic), and tool names.
 func ValidateOrchestrationPlan(p *OrchestrationPlan, knownTool func(string) bool) error {
 	if p == nil {
 		return fmt.Errorf("plan is nil")
@@ -77,22 +77,82 @@ func ValidateOrchestrationPlan(p *OrchestrationPlan, knownTool func(string) bool
 			}
 		}
 	}
-	// Cycle check + forward refs only (depends must appear earlier in list for simplicity)
-	indexOf := make(map[string]int)
-	for i, s := range p.Steps {
-		indexOf[s.ID] = i
-	}
-	for _, s := range p.Steps {
-		for _, d := range s.DependsOn {
-			if !ids[d] {
-				return fmt.Errorf("step %s depends on unknown id %q", s.ID, d)
-			}
-			if indexOf[d] >= indexOf[s.ID] {
-				return fmt.Errorf("step %s: depends_on %q must refer to an earlier step", s.ID, d)
-			}
-		}
+	if _, err := OrchestrationExecutionOrder(p.Steps); err != nil {
+		return err
 	}
 	return nil
+}
+
+// OrchestrationExecutionOrder returns the same steps in a valid topological order (dependencies
+// before dependents). When several steps are ready (in-degree 0), the one with the lower
+// original index in the input slice is chosen first. Unknown step ids in depends_on, duplicate
+// step ids, empty ids, or a cycle produce an error.
+func OrchestrationExecutionOrder(steps []OrchestrationStep) ([]OrchestrationStep, error) {
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("no steps")
+	}
+	idToIndex := make(map[string]int, len(steps))
+	for i, s := range steps {
+		if strings.TrimSpace(s.ID) == "" {
+			return nil, fmt.Errorf("step id is empty")
+		}
+		if _, dup := idToIndex[s.ID]; dup {
+			return nil, fmt.Errorf("duplicate step id: %s", s.ID)
+		}
+		idToIndex[s.ID] = i
+	}
+
+	inDegree := make(map[string]int, len(steps))
+	adj := make(map[string][]string, len(steps))
+	for _, s := range steps {
+		inDegree[s.ID] = 0
+	}
+	for _, s := range steps {
+		seenDep := make(map[string]bool)
+		for _, d := range s.DependsOn {
+			d = strings.TrimSpace(d)
+			if d == "" {
+				return nil, fmt.Errorf("step %s: empty depends_on", s.ID)
+			}
+			if _, ok := idToIndex[d]; !ok {
+				return nil, fmt.Errorf("step %s depends on unknown id %q", s.ID, d)
+			}
+			if seenDep[d] {
+				continue
+			}
+			seenDep[d] = true
+			inDegree[s.ID]++
+			adj[d] = append(adj[d], s.ID)
+		}
+	}
+
+	n := len(steps)
+	result := make([]OrchestrationStep, 0, n)
+	placed := make(map[string]bool, n)
+	for len(result) < n {
+		bestIdx := -1
+		for i, s := range steps {
+			if placed[s.ID] {
+				continue
+			}
+			if inDegree[s.ID] != 0 {
+				continue
+			}
+			if bestIdx == -1 || i < bestIdx {
+				bestIdx = i
+			}
+		}
+		if bestIdx == -1 {
+			return nil, fmt.Errorf("orchestration plan has a cyclic depends_on graph")
+		}
+		st := steps[bestIdx]
+		placed[st.ID] = true
+		result = append(result, st)
+		for _, v := range adj[st.ID] {
+			inDegree[v]--
+		}
+	}
+	return result, nil
 }
 
 // OrchestrationPlanFromJSON parses JSON and validates.
