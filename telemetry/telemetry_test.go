@@ -67,7 +67,7 @@ func TestFinishTurnWritesArtifacts(t *testing.T) {
 	}
 	ctx := rt.WithTurn(context.Background(), tr)
 	rt.OnToolCallStart(ctx, "read_file", `{"path":"README.md"}`)
-	rt.OnToolCallEnd(ctx, "read_file", 10*time.Millisecond, nil, "", "ok")
+	rt.OnToolCallEnd(ctx, "read_file", 10*time.Millisecond, nil, "", "ok", `{"path":"README.md"}`)
 	rt.FinishTurn(tr, "done")
 
 	runDir := filepath.Join(tmp, tr.RunID)

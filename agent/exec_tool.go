@@ -13,6 +13,16 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+// reactiveWalletContractPipeline is true when the main tool loop should route
+// wallet_execute_contract_call through the preview → simulate → send pipeline (same as
+// orchestration when contract-call tools are allowed), instead of a direct tool execution.
+func (a *Agent) reactiveWalletContractPipeline() bool {
+	if a == nil || a.tools == nil || a.tools.Wallet == nil {
+		return false
+	}
+	return a.planner.Enabled && a.planner.CapabilityEnabled("wallet")
+}
+
 // executeToolForMessage runs a single tool with the same injection behavior as HandleMessage.
 // If walletPipeline is true and the tool is wallet_execute_contract_call, runs the wallet
 // preview/simulate/send pipeline via planning.WalletExecutor instead of a raw tool call.
@@ -83,12 +93,12 @@ func (a *Agent) tryWalletContractPipeline(ctx context.Context, msg gateway.Incom
 	}
 
 	constraints := map[string]string{
-		"to":         strings.TrimSpace(wa.To),
-		"data":       strings.TrimSpace(wa.Data),
-		"value_wei":  valueWei,
-		"_platform":  msg.Platform,
-		"_user_id":   msg.UserID,
-		"_chat_id":   msg.ChatID,
+		"to":        strings.TrimSpace(wa.To),
+		"data":      strings.TrimSpace(wa.Data),
+		"value_wei": valueWei,
+		"_platform": msg.Platform,
+		"_user_id":  msg.UserID,
+		"_chat_id":  msg.ChatID,
 	}
 	if chainID != "" {
 		constraints["chain_id"] = chainID

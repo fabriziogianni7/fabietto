@@ -527,7 +527,7 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		if t.Telemetry != nil {
-			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "")
+			t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, "invalid_arguments", "", argsJSON)
 		}
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
@@ -578,7 +578,7 @@ func (t *Tools) ExecuteToolWithContext(ctx context.Context, name, argsJSON strin
 		err = fmt.Errorf("unknown tool: %s", name)
 	}
 	if t.Telemetry != nil {
-		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out)
+		t.Telemetry.OnToolCallEnd(ctx, name, time.Since(start), err, categorizeToolError(err), out, argsJSON)
 	}
 	return out, err
 }

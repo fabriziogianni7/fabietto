@@ -277,6 +277,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 	toolDefs := tools.Definitions()
 	mustExecuteWallet := a.tools.Wallet != nil && wantsWalletSend(text)
 	walletToolUsed := false
+	walletPipelineReactive := a.reactiveWalletContractPipeline()
 
 	for i := 0; i < maxToolRounds; i++ {
 		resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -306,7 +307,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				}
 				args := tc.Function.Arguments
 				var result string
-				result = a.executeToolForMessage(ctx, msg, tc.Function.Name, args, false)
+				result = a.executeToolForMessage(ctx, msg, tc.Function.Name, args, walletPipelineReactive)
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:       openai.ChatMessageRoleTool,
 					Content:    result,
@@ -329,7 +330,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg gateway.IncomingMessage) 
 				walletToolUsed = true
 			}
 			var result string
-			result = a.executeToolForMessage(ctx, msg, toolName, toolArgs, false)
+			result = a.executeToolForMessage(ctx, msg, toolName, toolArgs, walletPipelineReactive)
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    result,
