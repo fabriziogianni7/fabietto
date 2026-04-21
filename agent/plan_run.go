@@ -53,9 +53,9 @@ func (a *Agent) shouldUseWalletPlanner(ctx context.Context, text string) bool {
 // tryWalletPlanner runs plan-and-execute for wallet contract flows. Returns ("", false) to fall back to reactive loop.
 func (a *Agent) tryWalletPlanner(ctx context.Context, msg gateway.IncomingMessage, userText string) (string, bool) {
 	type plannerOut struct {
-		Goal         string            `json:"goal"`
-		Constraints  map[string]string `json:"constraints"`
-		Capability   string            `json:"capability"`
+		Goal        string            `json:"goal"`
+		Constraints map[string]string `json:"constraints"`
+		Capability  string            `json:"capability"`
 	}
 
 	sys := `You are a planning assistant. The user wants an on-chain contract interaction (swap, contract call, etc.).

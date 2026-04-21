@@ -17,11 +17,11 @@ const (
 type StepStatus string
 
 const (
-	StepPending    StepStatus = "pending"
-	StepRunning    StepStatus = "running"
-	StepSucceeded  StepStatus = "succeeded"
-	StepFailed     StepStatus = "failed"
-	StepSkipped    StepStatus = "skipped"
+	StepPending   StepStatus = "pending"
+	StepRunning   StepStatus = "running"
+	StepSucceeded StepStatus = "succeeded"
+	StepFailed    StepStatus = "failed"
+	StepSkipped   StepStatus = "skipped"
 )
 
 // StepType is a semantic label for wallet and future plugins.
@@ -60,16 +60,16 @@ type Step struct {
 
 // Planner mode (wallet contract pipeline). See PLANNER_MODE env.
 const (
-	PlannerModeOff           = "off"
-	PlannerModeWallet        = "wallet"         // swap/contract-call keywords only (legacy)
-	PlannerModeAuto          = "auto"           // heuristics + optional router for ambiguity
-	PlannerModeAlwaysWallet  = "always_wallet"  // try planner on every message (except native send path)
+	PlannerModeOff          = "off"
+	PlannerModeWallet       = "wallet"        // swap/contract-call keywords only (legacy)
+	PlannerModeAuto         = "auto"          // heuristics + optional router for ambiguity
+	PlannerModeAlwaysWallet = "always_wallet" // try planner on every message (except native send path)
 )
 
 // Orchestration modes (ORCHESTRATION_MODE). General multi-tool planner.
 const (
-	OrchestrationModeOff   = "off"
-	OrchestrationModeAuto  = "auto"  // router/heuristic — use tryGeneralOrchestration when likely multi-step
+	OrchestrationModeOff    = "off"
+	OrchestrationModeAuto   = "auto"   // router/heuristic — use tryGeneralOrchestration when likely multi-step
 	OrchestrationModeAlways = "always" // always try orchestration first (fallback to reactive)
 )
 
@@ -80,9 +80,9 @@ type OrchestrationRuntime struct {
 
 // RuntimeConfig is planner enablement passed from main config.
 type RuntimeConfig struct {
-	Enabled      bool
-	Mode         string            // PlannerMode* or ""
-	Capabilities map[string]bool // e.g. "wallet" -> true
+	Enabled       bool
+	Mode          string          // PlannerMode* or ""
+	Capabilities  map[string]bool // e.g. "wallet" -> true
 	Orchestration OrchestrationRuntime
 }
 

@@ -28,7 +28,7 @@ type OrchestrationStep struct {
 
 // OrchestrationPlan is a multi-step plan using only allowed tools per step.
 type OrchestrationPlan struct {
-	Goal  string               `json:"goal"`
+	Goal  string              `json:"goal"`
 	Steps []OrchestrationStep `json:"steps"`
 }
 

@@ -12,7 +12,7 @@ import (
 
 var (
 	autoWalletKeywords = regexp.MustCompile(`(?i)\b(swap|trade|stake|unstake|bridge|mint|burn|deposit|withdraw|claim|harvest|farm|pool|liquidity|yield|defi|aggregator|router|approve|allowance|permit|erc-?20|nft|uniswap|sushiswap|aave|compound|lido|curve|1inch|paraswap|cowswap|dex|amm|open\s*sea|usdc|usdt|dai|weth|matic|arb|op\s*eth|base\s*eth)\b`)
-	hexAddressInText     = regexp.MustCompile(`(?i)0x[0-9a-f]{40}\b`)
+	hexAddressInText   = regexp.MustCompile(`(?i)0x[0-9a-f]{40}\b`)
 )
 
 func autoWalletHeuristicQuick(text string) bool {
